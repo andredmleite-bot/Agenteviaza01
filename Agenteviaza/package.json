@@ -1,0 +1,22 @@
+{
+  "name": "agenteviaza",
+  "version": "1.0.0",
+  "description": "Gomilhas Agent API",
+  "private": true,
+  "main": "server/index.mjs",
+  "scripts": {
+    "start": "node server/index.mjs",
+    "dev": "node server/index.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@openai/agents": "^0.1.10",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "multer": "^2.0.2",
+    "zod": "^3.25.76"
+  }
+}
