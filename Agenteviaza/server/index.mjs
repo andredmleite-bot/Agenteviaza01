@@ -385,18 +385,17 @@ function extractIATAFromText(text){
     return IATA_STOPLIST.has(t);
   }
 
-  let m = norm.match(/([a-záàâãéèêíïóôõöúçñ\s]+?)\s+(?:para|pra)\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s|,|$)/i);
-
-  if (m) {
-    const left = m[1].trim();
-    const right = m[2].trim();
+  const parts = norm.split(/\s+(?:para|pra)\s+/i);
+  if (parts.length >= 2) {
+    let left = parts[0].trim();
+    let right = parts.slice(1).join(' ').trim();
+    left = left.replace(/^(quero|passagem|ida|volta|de|uma|um)\s+/i, '').trim();
+    right = right.replace(/\s+(ida|volta|dia|data|de|com|sem).*$/i, '').trim();
     console.log('  📍 Encontrou padrão: ', { left, right });
-
-    if (!isForbiddenToken(left) && !isForbiddenToken(right)) {
+    if (left && right && !isForbiddenToken(left) && !isForbiddenToken(right)) {
       const dep = resolveIATA(left);
       const des = resolveIATA(right);
       console.log('  ✅ Resolveu IATA:', { dep, des });
-
       if (dep && des) {
         console.log('  🎯 RETORNANDO:', { dep, des });
         return { dep, des };
@@ -413,6 +412,17 @@ function extractIATAFromText(text){
   if (codes.length >= 2) {
     console.log('  🎯 RETORNANDO códigos:', codes);
     return { dep: codes[0], des: codes[1] };
+  }
+
+  if (codes.length === 1) {
+    console.log('  📍 Só um código, procurando outro...');
+    for (const entry of IATA_LEXICON) {
+      const match = anyAliasMatch(entry, norm);
+      if (match && entry.code !== codes[0]) {
+        console.log('  🎯 RETORNANDO misto:', [codes[0], entry.code]);
+        return { dep: codes[0], des: entry.code };
+      }
+    }
   }
 
   if (codes.length === 1) {
