@@ -33,7 +33,8 @@ const OFFICIAL_IATA = new Set([
   'DXB','AUH','DOH','IST','SAW','NRT','HND','SIN','BKK','DMK','DPS','SYD','MEL','CMN','RAK','JNB','CPT'
 ]);
 const IATA_STOPLIST = new Set([
-  'dia','hoje','amanha','amanhã','ida','volta','mes','mês','proximo','próximo','de','para','pra','em','ate','até','partindo','retorno','so','somente','só','apenas','com','sem'
+  'dia','hoje','amanha','amanhã','ida','volta','mes','mês','proximo','próximo','de','para','pra','em','ate','até','partindo','retorno','so','somente','só','apenas','com','sem',
+  'ola','olá','oi','hey'
 ]);
 
 const MONTHS_PT = { janeiro:0, jan:0, fevereiro:1, fev:1, março:2, marco:2, mar:2, abril:3, abr:3, maio:4, junho:5, jun:5, julho:6, jul:6, agosto:7, ago:7, setembro:8, set:8, outubro:9, out:9, novembro:10, nov:10, dezembro:11, dez:11 };
@@ -389,7 +390,10 @@ function extractAllData(text){
   console.log(`\n🔍 extractAllData: "${text}"`);
   const result = {};
   const base = String(text||'');
-  const cleanedText = base.replace(/\b(quero ir|quero viajar|vou|vou para|to indo|estou indo)\b/gi,'').trim();
+  const cleanedText = base
+    .replace(/\b(oi|ola|olá|hey|eae|salve|bom dia|boa tarde|boa noite)\b/gi,'')
+    .replace(/\b(quero ir|quero viajar|vou|vou para|to indo|estou indo)\b/gi,'')
+    .trim();
   const iataMatch = cleanedText.match(/([a-záàâãéèêíïóôõöúçñ\s]+?)\s+(?:para|pra)\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s+dia|\s+com|$|,)/i);
   if (iataMatch) {
     let depCity = iataMatch[1].trim();
