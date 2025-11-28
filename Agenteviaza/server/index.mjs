@@ -391,7 +391,10 @@ function extractIATAFromText(text){
       const dep=resolveIATA(left);
       const des=resolveIATA(right);
       console.log('  ✅ Resolveu IATA:', { dep, des });
-      if(dep&&des&&OFFICIAL_IATA.has(dep)&&OFFICIAL_IATA.has(des)) return { dep, des };
+      if(dep&&des&&OFFICIAL_IATA.has(dep)&&OFFICIAL_IATA.has(des)){
+        console.log('  🎯 RETORNANDO:', { dep, des });
+        return { dep, des };
+      }
     }
   }
 
@@ -399,7 +402,10 @@ function extractIATAFromText(text){
 
   console.log('  📍 Códigos encontrados:', codes);
 
-  if(codes.length>=2) return { dep: codes[0], des: codes[1] };
+  if(codes.length>=2){
+    console.log('  🎯 RETORNANDO códigos:', codes);
+    return { dep: codes[0], des: codes[1] };
+  }
 
   const found=[];
   for(const entry of IATA_LEXICON){
@@ -411,7 +417,10 @@ function extractIATAFromText(text){
     }
   }
 
-  if(found.length>=2) return { dep: found[0], des: found[1] };
+  if(found.length>=2){
+    console.log('  🎯 RETORNANDO aliases:', found);
+    return { dep: found[0], des: found[1] };
+  }
 
   console.log('  ❌ Não encontrou IATA');
   return null;
