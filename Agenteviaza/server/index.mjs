@@ -233,31 +233,17 @@ async function processChatMessage(sessionId, message){
 }
 
 app.post('/api/chat', async (req, res) => {
-  console.log('═══ INICIO ═══');
   const { sessionId, message } = req.body || {};
   if (!sessionId || !message) {
-    console.log('❌ Faltam parâmetros');
     return res.status(400).send('Parâmetros obrigatórios');
   }
   try {
-    if (!OPENAI_API_KEY) {
-      console.log('❌ Sem OPENAI_API_KEY');
-      return res.status(500).json({ reply: 'Backend sem OPENAI_API_KEY configurada.' });
-    }
-    console.log('🚀 Chamando processChatMessage com:', message);
-    const result = await processChatMessage(sessionId, message);
-    if (result?.status) {
-      console.error('❌❌❌ ERRO CAPTURADO ❌❌❌');
-      console.error('Full result:', result);
-      return res.status(result.status).json({
-        reply: result.error || 'Instabilidade no agente. Tente novamente.',
-        debug: result
-      });
-    }
-    console.log('✅ Result:', result);
-    return res.json({ reply: result.reply });
+    console.log('📨 Mensagem recebida:', message);
+    const reply = `Você disse: "${message}". Estou testando o backend.`;
+    console.log('✅ Respondendo:', reply);
+    return res.json({ reply });
   } catch (err) {
-    console.error('❌ ERRO GERAL:', err);
+    console.error('❌ Erro:', err.message);
     return res.status(500).json({ reply: 'Erro interno.' });
   }
 });
