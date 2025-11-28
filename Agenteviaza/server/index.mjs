@@ -413,16 +413,25 @@ function extractAllData(text){
   }
   const dateMatch = text.match(/dia\s+(\d{1,2})\/(\d{1,2})/i);
   if (dateMatch) {
-    const day = dateMatch[1].padStart(2, '0');
-    const month = dateMatch[2].padStart(2, '0');
-    const year = new Date().getFullYear();
+    const day = String(dateMatch[1]).padStart(2, '0');
+    const month = String(dateMatch[2]).padStart(2, '0');
+    let year = new Date().getFullYear();
+    const today = new Date();
+    const currentMonth = today.getMonth() + 1;
+    if (parseInt(month) < currentMonth) {
+      year++;
+    }
     result.dpt = `${year}-${month}-${day}`;
     console.log(`  ✅ Data ida: ${result.dpt}`);
     const returnMatch = text.match(/volta\s+(\d{1,2})\/(\d{1,2})|retorno\s+(\d{1,2})\/(\d{1,2})/i);
     if (returnMatch) {
-      const retDay = (returnMatch[1] || returnMatch[3]).padStart(2, '0');
-      const retMonth = (returnMatch[2] || returnMatch[4]).padStart(2, '0');
-      result.dst = `${year}-${retMonth}-${retDay}`;
+      const retDay = String(returnMatch[1] || returnMatch[3]).padStart(2, '0');
+      const retMonth = String(returnMatch[2] || returnMatch[4]).padStart(2, '0');
+      let retYear = year;
+      if (parseInt(retMonth) < parseInt(month)) {
+        retYear++;
+      }
+      result.dst = `${retYear}-${retMonth}-${retDay}`;
       result.ow = false;
       console.log(`  ✅ Data volta: ${result.dst}`);
     } else {
