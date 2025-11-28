@@ -374,48 +374,76 @@ app.post('/webhook/evo', async (req,res)=>{
     const { text, number } = parseEvoPayload(req.body || {});
     if (!text || !number) return res.json({ ok: true });
     const sid = number;
+    console.log(`\n📱 [${sid}] "${text}"`);
     if (!sessions.has(sid)) sessions.set(sid, []);
     const history = sessions.get(sid);
     history.push({ role: 'user', content: String(text) });
-
-    if (!OPENAI_API_KEY) {
-      await evoSendText(number, 'Erro: API key não configurada');
-      return res.json({ ok: true });
-    }
-
-    const inferred = computeStateFromMessage(text);
-    let reply = '';
-
-    if (isConfirmation(text) && pendingQuotes.has(sid)) {
-      try {
-        const url = await buildQuoteLinkStandalone(pendingQuotes.get(sid));
-        pendingQuotes.delete(sid);
-        reply = `Pronto! Aqui está sua cotação:\n${url}`;
-        history.push({ role: 'assistant', content: reply });
-      } catch (err) {
-        pendingQuotes.delete(sid);
-        reply = 'Houve erro ao gerar o link. Tente novamente com os dados completos.';
-        history.push({ role: 'assistant', content: reply });
+    if (!OPENAI_API_KEY) { await evoSendText(number, 'Erro: API key não configurada'); return res.json({ ok: true }); }
+    await acquireLock(sid);
+    try {
+      let state = getSessionState(sid);
+      console.log('📋 Estado anterior:', state);
+      if (isStateComplete(state) && isConfirmation(text)) {
+        console.log('✅ Confirmado! Gerando link...');
+        try {
+          const url = await buildQuoteLinkStandalone(state);
+          sessionState.delete(sid);
+          const reply = `🎉 Aqui está sua cotação:\n${url}\n\nDeseja outra?`;
+          history.push({ role: 'assistant', content: reply });
+          await evoSendText(number, reply);
+          return res.json({ ok: true });
+        } catch (err) {
+          console.error('❌ Erro ao gerar link:', err.message);
+          sessionState.delete(sid);
+          const reply = `❌ Erro: ${err.message}\n\nVamos começar de novo? Informe: origem, destino, datas e passageiros.`;
+          history.push({ role: 'assistant', content: reply });
+          await evoSendText(number, reply);
+          return res.json({ ok: true });
+        }
       }
-    } else if (inferred) {
-      pendingQuotes.set(sid, inferred);
-      const summary = summaryForState(inferred);
-      reply = `${summary} Confirma?`;
+      console.log('🔍 Extraindo dados...');
+      const extracted = extractAnyData(text);
+      if (extracted.dep && extracted.des) {
+        if (state.dep && state.des && (state.dep !== extracted.dep || state.des !== extracted.des)) {
+          console.log('🔄 Novo pedido! Limpando...');
+          sessionState.delete(sid);
+          state = {};
+        }
+      }
+      if (Object.keys(extracted).length > 0) {
+        console.log('💾 Mesclando dados...');
+        state = mergeStateData(sid, extracted);
+        console.log('📋 Novo estado:', state);
+      }
+      if (isStateComplete(state)) {
+        const summary = formatStateMessage(state);
+        const reply = `${summary}\n\n✅ Perfeito! Confirma essa cotação?`;
+        history.push({ role: 'assistant', content: reply });
+        await evoSendText(number, reply);
+        return res.json({ ok: true });
+      }
+      console.log('📝 Mostrando o que falta...');
+      const summary = formatStateMessage(state);
+      const missing = [];
+      if (!state.dep || !state.des) missing.push('🌍 origem e destino');
+      if (!state.dpt) missing.push('📅 data de ida');
+      if (!state.ow && !state.dst) missing.push('📅 data de volta');
+      if ((state.adt||0)+(state.chd||0)+(state.bby||0)===0) missing.push('👥 número de passageiros');
+      if (missing.length === 0) {
+        const reply = `${summary}\n\n✅ Pronto! Confirma?`;
+        history.push({ role: 'assistant', content: reply });
+        await evoSendText(number, reply);
+        return res.json({ ok: true });
+      }
+      const reply = `${summary}\n\n📝 Ainda preciso de:\n${missing.map(m=>`• ${m}`).join('\n')}`;
       history.push({ role: 'assistant', content: reply });
-    } else {
-      try {
-        const result = await run(agent, text);
-        reply = result?.state?.modelResponses?.[0]?.output?.[0]?.content?.[0]?.text || result?.finalOutput || 'Desculpe, não consegui processar.';
-        reply = replaceISODatesWithBR(adjustYearsInViazaLink(reply));
-        history.push({ role: 'assistant', content: reply });
-      } catch (err) {
-        reply = 'Desculpe, tive um problema. Tente novamente.';
-      }
+      await evoSendText(number, reply);
+      return res.json({ ok: true });
+    } finally {
+      releaseLock(sid);
     }
-
-    if (reply) await evoSendText(number, reply);
-    return res.json({ ok: true });
-  } catch {
+  } catch (err) {
+    console.error('❌ Erro webhook:', err);
     return res.json({ ok: true });
   }
 });
