@@ -251,16 +251,50 @@ async function processChatMessage(sessionId, message){
 
 app.post('/api/chat', async (req, res) => {
   const { sessionId, message } = req.body || {};
-  if (!sessionId || !message) {
-    return res.status(400).send('Parâmetros obrigatórios');
-  }
+  if (!sessionId || !message) return res.status(400).send('Parâmetros obrigatórios');
   try {
-    console.log('📨 Mensagem recebida:', message);
-    const reply = `Você disse: "${message}". Estou testando o backend.`;
-    console.log('✅ Respondendo:', reply);
-    return res.json({ reply });
+    if (!sessions.has(sessionId)) sessions.set(sessionId, []);
+    const history = sessions.get(sessionId);
+    history.push({ role: 'user', content: String(message) });
+
+    if (isConfirmation(message) && pendingQuotes.has(sessionId)) {
+      try {
+        const url = await buildQuoteLinkStandalone(pendingQuotes.get(sessionId));
+        pendingQuotes.delete(sessionId);
+        const reply = `Pronto! Aqui está sua cotação:\n${url}`;
+        history.push({ role: 'assistant', content: reply });
+        return res.json({ reply });
+      } catch (err) {
+        pendingQuotes.delete(sessionId);
+        const reply = 'Erro ao gerar link após confirmação. Vamos ajustar dados e tentar novamente?';
+        history.push({ role: 'assistant', content: reply });
+        return res.json({ reply });
+      }
+    }
+
+    const inferred = computeStateFromMessage(message);
+    if (inferred) {
+      pendingQuotes.set(sessionId, inferred);
+      const reply = summaryForState(inferred);
+      history.push({ role: 'assistant', content: reply });
+      return res.json({ reply });
+    }
+
+    if (!OPENAI_API_KEY) return res.status(500).json({ reply: 'Backend sem OPENAI_API_KEY configurada.' });
+    try {
+      const raw = await run(agent, message);
+      let reply = raw?.lastModelResponse?.output?.[0]?.content?.[0]?.text
+        ?? raw?.state?.lastModelResponse?.output?.[0]?.content?.[0]?.text
+        ?? raw?.output_text
+        ?? raw?.finalOutput
+        ?? 'Não consegui gerar resposta.';
+      reply = replaceISODatesWithBR(adjustYearsInViazaLink(reply));
+      history.push({ role: 'assistant', content: reply });
+      return res.json({ reply });
+    } catch (err) {
+      return res.status(500).json({ reply: 'Instabilidade no agente. Tente novamente.' });
+    }
   } catch (err) {
-    console.error('❌ Erro:', err.message);
     return res.status(500).json({ reply: 'Erro interno.' });
   }
 });
