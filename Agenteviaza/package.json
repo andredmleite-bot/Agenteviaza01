@@ -1,7 +1,7 @@
 {
   "name": "agenteviaza",
   "version": "1.0.0",
-  "description": "Gomilhas Agent API",
+  "description": "Viaza Agent API",
   "private": true,
   "main": "server/index.mjs",
   "scripts": {
