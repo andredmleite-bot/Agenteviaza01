@@ -389,8 +389,8 @@ function extractIATAFromText(text){
   if (parts.length >= 2) {
     let left = parts[0].trim();
     let right = parts.slice(1).join(' ').trim();
-    left = left.replace(/^(quero|passagem|ida|volta|de|uma|um)\s+/i, '').trim();
-    right = right.replace(/\s+(ida|volta|dia|data|de|com|sem).*$/i, '').trim();
+    left = left.replace(/^(quero|quer|passagem|passagens|ida|volta|de|uma|um|vou|queria)\s+/i, '').trim();
+    right = right.replace(/\s+(ida|volta|dia|data|de|com|sem|partindo|retorno).*$/i, '').trim();
     console.log('  📍 Encontrou padrão: ', { left, right });
     if (left && right && !isForbiddenToken(left) && !isForbiddenToken(right)) {
       const dep = resolveIATA(left);
