@@ -247,16 +247,31 @@ app.post('/api/chat', async (req, res) => {
     }
 
     function getSessionState(sid){ return sessionState.get(sid) || {}; }
-    function isStateComplete(s){
-      if (!s) return false;
-      const total = (s.adt||0)+(s.chd||0)+(s.bby||0);
-      const dep = s.dep && String(s.dep).toUpperCase();
-      const des = s.des && String(s.des).toUpperCase();
-      const ow = !!s.ow;
-      const hasDstOk = ow ? true : !!s.dst;
-      return !!dep && !!des && dep!==des && OFFICIAL_IATA.has(dep) && OFFICIAL_IATA.has(des) && !!s.dpt && total>0 && hasDstOk;
+    function isStateComplete(state){
+      return state &&
+        state.dep &&
+        state.des &&
+        state.dpt &&
+        ((state.adt||0)+(state.chd||0)+(state.bby||0) > 0) &&
+        (state.ow === true || (state.ow === false && state.dst));
     }
-    function mergeStateData(sid, partial){ const cur=getSessionState(sid); const merged={ ...cur, ...partial }; sessionState.set(sid, merged); return merged; }
+    function mergeStateData(sid, newData){
+      const current = getSessionState(sid);
+      const merged = {
+        dep: newData.dep || current.dep || undefined,
+        des: newData.des || current.des || undefined,
+        dpt: newData.dpt || current.dpt || undefined,
+        dst: newData.dst || current.dst || null,
+        adt: newData.adt !== undefined ? newData.adt : (current.adt || 0),
+        chd: newData.chd !== undefined ? newData.chd : (current.chd || 0),
+        bby: newData.bby !== undefined ? newData.bby : (current.bby || 0),
+        ow: newData.ow !== undefined ? newData.ow : (current.ow !== undefined ? current.ow : true),
+        ec: newData.ec !== undefined ? newData.ec : (current.ec || true),
+      };
+      sessionState.set(sid, merged);
+      console.log('💾 Estado mesclado:', merged);
+      return merged;
+    }
     function formatStateMessage(s){ return summaryForState(s); }
 
     let state = getSessionState(sessionId);
@@ -265,7 +280,19 @@ app.post('/api/chat', async (req, res) => {
     if (isStateComplete(state) && isConfirmation(message)) {
       console.log('✅ Estado completo e confirmado! Gerando link...');
       try {
-        const url = await buildQuoteLinkStandalone(state);
+        const stateToValidate = {
+          dep: state.dep,
+          des: state.des,
+          dpt: state.dpt,
+          dst: state.dst || null,
+          adt: state.adt || 0,
+          chd: state.chd || 0,
+          bby: state.bby || 0,
+          ec: state.ec !== undefined ? state.ec : true,
+          ow: state.ow !== undefined ? state.ow : true,
+        };
+        console.log('🔗 Enviando para link:', stateToValidate);
+        const url = await buildQuoteLinkStandalone(stateToValidate);
         sessionState.delete(sessionId);
         console.log('🧹 Memória da sessão limpa!');
         const reply = `🎉 Pronto! Aqui está sua cotação:\n${url}\n\nDeseja outra cotação?`;
@@ -430,7 +457,19 @@ app.post('/webhook/evo', async (req,res)=>{
       if (isStateComplete(state) && isConfirmation(text)) {
         console.log('✅ Confirmado! Gerando link...');
         try {
-          const url = await buildQuoteLinkStandalone(state);
+          const stateToValidate = {
+            dep: state.dep,
+            des: state.des,
+            dpt: state.dpt,
+            dst: state.dst || null,
+            adt: state.adt || 0,
+            chd: state.chd || 0,
+            bby: state.bby || 0,
+            ec: state.ec !== undefined ? state.ec : true,
+            ow: state.ow !== undefined ? state.ow : true,
+          };
+          console.log('🔗 Enviando para link:', stateToValidate);
+          const url = await buildQuoteLinkStandalone(stateToValidate);
           sessionState.delete(sid);
           const reply = `🎉 Aqui está sua cotação:\n${url}\n\nDeseja outra?`;
           history.push({ role: 'assistant', content: reply });
