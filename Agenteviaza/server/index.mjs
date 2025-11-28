@@ -452,14 +452,14 @@ app.post('/evo/send-text', async (req,res)=>{ try{ const number=req.body?.number
 app.listen(Number(PORT), ()=>{ console.log(`Servidor iniciado em http://localhost:${PORT}`); });
 // Extração de dados a partir da mensagem para resumo/confirmacao
 function extractIATAFromText(text){
-  const raw = String(text || '').trim();
-  let cleaned = raw
-    .replace(/^(oi|ola|olá|hey|ola tudo bem|agora|agora quero|mas|pois|e|ja|já|também|tbm|eae|e ai)\s+/i, '')
-    .replace(/^(quero|quer|passagem|passagens|uma|um|vou|queria|gostaria|preciso|busco|desejo|gostaria)\s+/i, '')
+  let raw = String(text || '').trim();
+  raw = raw
+    .replace(/\b(oi|ola|olá|hey|vc|você|quero|gostaria|gostava|preciso|desejo|vou|vamos)\b/gi, '')
+    .replace(/\b(ir|ir para|viajar para|passagem para|passagens para|quero ir|quero viajar)\b/gi, 'PARA')
+    .replace(/\bPARA\s+PARA/gi, 'PARA')
     .trim();
-  const norm = normalizeText(cleaned);
-
-  console.log('  🔍 extractIATAFromText:', { raw, cleaned, norm });
+  const norm = normalizeText(raw);
+  console.log(`  🔍 extractIATAFromText cleaned: "${raw}"`);
 
   function isForbiddenToken(tok){
     const t = normalizeText(tok);
@@ -473,7 +473,7 @@ function extractIATAFromText(text){
   ];
 
   for (const pattern of patterns) {
-    const match = cleaned.match(pattern);
+    const match = raw.match(pattern);
     if (match) {
       let left = match[1].trim();
       let right = match[2].trim();
@@ -492,7 +492,7 @@ function extractIATAFromText(text){
     }
   }
 
-  const codes = Array.from(cleaned.matchAll(/\b([A-Za-z]{3})\b/g))
+  const codes = Array.from(raw.matchAll(/\b([A-Z]{3})\b/g))
     .map(x => x[1].toUpperCase())
     .filter(c => !IATA_STOPLIST.has(normalizeText(c)));
   console.log('  📍 Códigos IATA:', codes);
@@ -534,23 +534,37 @@ function extractIATAFromText(text){
   console.log('  ❌ Não encontrou IATA');
   return null;
 }
+
+function extractAnyData(text){
+  if (!text) return {};
+  console.log(`\n🔍 [extractAnyData] Entrada: "${text}"`);
+  const result = {};
+  const places = extractIATAFromText(text);
+  if (places?.dep && places?.des) { result.dep = places.dep; result.des = places.des; console.log(`  ✅ IATA: ${result.dep} → ${result.des}`); }
+  const dates = extractDatesFromText(text);
+  if (dates?.dpt) { result.dpt = dates.dpt; result.dst = dates.dst || null; result.ow = dates.ow ?? true; console.log(`  ✅ Datas: ${result.dpt} até ${result.dst || 'só ida'}`); }
+  const pax = extractPassengersFromText(text);
+  if (pax) { result.adt = pax.adt || 0; result.chd = pax.chd || 0; result.bby = pax.bby || 0; console.log(`  ✅ Passageiros: ${result.adt}A ${result.chd}C ${result.bby}B`); }
+  return result;
+}
 function extractDatesFromText(text){ const raw=stripDiacritics(String(text||'').toLowerCase()); const candidates=[]; const isoMatches=raw.match(/\b\d{4}-\d{2}-\d{2}\b/g)||[]; candidates.push(...isoMatches); const dmMatches=raw.match(/\b\d{1,2}\/\d{1,2}(?:\/\d{4})?\b/g)||[]; candidates.push(...dmMatches); const monthKeys=Object.keys(MONTHS_PT).join('|'); const natMatches=Array.from(raw.matchAll(new RegExp(`(\\d{1,2})\\s*(?:de\\s*)?(${monthKeys})`,'g'))).map(m=>`${m[1]} ${m[2]}`); candidates.push(...natMatches); const parsed=[]; for(const c of candidates){ const iso=parseNaturalDate(c); if(iso) parsed.push(iso); if(parsed.length>=2) break; } const dpt=parsed[0]||null; const dst=parsed[1]||null; if(!dpt) return null; if(!withinWindow(dpt)) return null; if(dst){ if(!withinWindow(dst)) return null; if(new Date(dst)<new Date(dpt)) return null; } return { dpt, dst, ow: !dst }; }
 function extractPassengersFromText(text){
   if (!text) return null;
-  const s = stripDiacritics(String(text||'').toLowerCase());
-  console.log('  🔍 extractPassengersFromText:', { text: s });
-  const hasPassengerKeywords = /\b(adulto|adultos|criança|criancas|criança|bebe|bebes|pessoa|pessoas|passageiro|passageiros)\b/i.test(s);
-  if (!hasPassengerKeywords) { console.log('  ❌ Nenhuma palavra de passageiro encontrada'); return null; }
+  const s = normalizeText(String(text)).toLowerCase();
+  if (/\b(so eu|sou so|apenas eu|só eu|somente eu|só|me)\b/.test(s)) { console.log('  ✅ "Só eu" → 1 adulto'); return { adt: 1, chd: 0, bby: 0 }; }
+  if (/\b(nos|nós|a gente|minha familia|familia inteira|todos)\b/.test(s)) { console.log('  ⚠️ Referência vaga detectada'); return null; }
+  console.log(`  🔍 extractPassengersFromText: "${s.substring(0,50)}..."`);
+  if (!/\b(adulto|crianca|bebe|pessoa|pax|passageiro)\b/.test(s)) { console.log('  ❌ Sem info de passageiros'); return null; }
   const num=(v)=>parseNumberPt(v)??(isNaN(Number(v))?undefined:Number(v));
-  const mAdt=s.match(/(\d+|uma|um|duas|dois|tres|três|quatro|cinco|seis|sete|oito|nove)\s*adulto/i);
-  const mChd=s.match(/(\d+|uma|um|duas|dois|tres|três|quatro|cinco|seis|sete|oito|nove)\s*crianc/i);
-  const mBby=s.match(/(\d+|uma|um|duas|dois|tres|três|quatro|cinco|seis|sete|oito|nove)\s*beb/i);
-  const adt=num(mAdt?.[1])??(mAdt?1:0);
-  const chd=num(mChd?.[1])??(mChd?1:0);
-  const bby=num(mBby?.[1])??(mBby?1:0);
-  console.log('  ✅ Passageiros extraídos:', { adt, chd, bby });
+  const mAdt=s.match(/(\d+|uma|um|duas|dois|tres|quatro|cinco|seis|sete|oito|nove)\s*(?:adulto)/i);
+  const mChd=s.match(/(\d+|uma|um|duas|dois|tres|quatro|cinco|seis|sete|oito|nove)\s*(?:crianca)/i);
+  const mBby=s.match(/(\d+|uma|um|duas|dois|tres|quatro|cinco|seis|sete|oito|nove)\s*(?:bebe|baby)/i);
+  const adt=num(mAdt?.[1])??1;
+  const chd=num(mChd?.[1])??0;
+  const bby=num(mBby?.[1])??0;
   const total=adt+chd+bby;
-  if(total<1||total>9){ console.log('  ❌ Total inválido:', total); return null; }
+  if(total<1||total>9){ console.log(`  ❌ Total inválido: ${total}`); return null; }
+  console.log(`  ✅ ${adt}A ${chd}C ${bby}B`);
   return { adt, chd, bby };
 }
 function computeStateFromMessage(message){
