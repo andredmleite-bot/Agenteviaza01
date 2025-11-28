@@ -396,7 +396,9 @@ function extractAllData(text){
   if (!text) return {};
   console.log(`\n🔍 extractAllData: "${text}"`);
   const result = {};
-  const iataMatch = text.match(/([a-záàâãéèêíïóôõöúçñ\s]+?)\s+(?:para|pra)\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s+dia|\s+com|$|,)/i);
+  const base = String(text||'');
+  const cleanedText = base.replace(/\b(quero ir|quero viajar|vou|vou para|to indo|estou indo)\b/gi,'').trim();
+  const iataMatch = cleanedText.match(/([a-záàâãéèêíïóôõöúçñ\s]+?)\s+(?:para|pra)\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s+dia|\s+com|$|,)/i);
   if (iataMatch) {
     let depCity = iataMatch[1].trim();
     let desCity = iataMatch[2].trim();
@@ -417,6 +419,19 @@ function extractAllData(text){
     }
   } else {
     console.log('  ❌ Padrão "X para Y" não encontrado');
+    const mDep = cleanedText.match(/\bde\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s+(?:para|pra)|\s+(?:dia|ida|volta)|,|$)/i);
+    const mDes = cleanedText.match(/\b(?:para|pra)\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s+(?:dia|ida|volta)|,|$)/i);
+    let dep = null; let des = null;
+    if (mDep) { let c=mDep[1].trim(); c=c.replace(/^de\s+/i,'').trim(); dep=resolveIATA(c)||null; if(!dep){ const n=normalizeText(c); for(const entry of IATA_LEXICON){ if(anyAliasMatch(entry,n)){ dep=entry.code; break; } } } }
+    if (mDes) { let c=mDes[1].trim(); c=c.replace(/^de\s+/i,'').trim(); des=resolveIATA(c)||null; if(!des){ const n=normalizeText(c); for(const entry of IATA_LEXICON){ if(anyAliasMatch(entry,n)){ des=entry.code; break; } } } }
+    if (dep && des) { result.dep=dep; result.des=des; console.log(`  ✅ IATA FINAL: ${dep} → ${des}`); }
+    else {
+      const normAll = normalizeText(cleanedText);
+      const found=[];
+      for (const entry of IATA_LEXICON) { if (anyAliasMatch(entry, normAll)) { found.push(entry.code); if (found.length>=2) break; } }
+      if (found.length>=2) { result.dep=found[0]; result.des=found[1]; console.log(`  ✅ IATA FINAL (aliases): ${result.dep} → ${result.des}`); }
+      else if (!dep && found.length===1) { result.dep=result.dep||found[0]; console.log(`  ✅ IATA parcial: dep=${result.dep}`); }
+    }
   }
   const dateMatch = text.match(/dia\s+(\d{1,2})\/(\d{1,2})/i);
   if (dateMatch) {
