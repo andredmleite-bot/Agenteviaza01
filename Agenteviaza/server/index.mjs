@@ -23,7 +23,10 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 
 const sessions = new Map();
 const unrecognizedIATA = new Set();
 const OFFICIAL_IATA = new Set([
-  'BSB','CGH','GIG','SSA','FLN','POA','VCP','REC','CWB','BEL','VIX','SDU','CGB','CGR','FOR','MCP','MGF','GYN','NVT','MAO','NAT','BPS','MCZ','PMW','SLZ','GRU','LDB','PVH','RBR','JOI','UDI','CXJ','IGU','THE','AJU','JPA','PNZ','CNF','BVB','CPV','STM','IOS','JDO','IMP','XAP','MAB','CZS','PPB','CFB','FEN','JTC','MOC','SAO','RIO'
+  'BSB','CGH','GIG','SSA','FLN','POA','VCP','REC','CWB','BEL','VIX','SDU','CGB','CGR','FOR','MCP','MGF','GYN','NVT','MAO','NAT','BPS','MCZ','PMW','SLZ','GRU','LDB','PVH','RBR','JOI','UDI','CXJ','IGU','THE','AJU','JPA','PNZ','CNF','BVB','CPV','STM','IOS','JDO','IMP','XAP','MAB','CZS','PPB','CFB','FEN','JTC','MOC','SAO','RIO',
+  'JFK','LGA','EWR','MIA','MCO','LAX','SFO','YYZ','YVR','YUL','EZE','AEP','SCL','MVD','MEX','CUN','LIM','BOG','PTY',
+  'LHR','LGW','CDG','ORY','AMS','FRA','MUC','BER','MAD','BCN','LIS','OPO','FCO','MXP','VCE','ZRH','GVA',
+  'DXB','AUH','DOH','IST','SAW','NRT','HND','SIN','BKK','DMK','DPS','SYD','MEL','CMN','RAK','JNB','CPT'
 ]);
 const IATA_STOPLIST = new Set([
   'dia','hoje','amanha','amanhã','ida','volta','mes','mês','proximo','próximo','de','para','pra','em','ate','até','partindo','retorno','so','somente','só','apenas','com','sem'
