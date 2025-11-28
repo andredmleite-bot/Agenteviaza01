@@ -376,9 +376,13 @@ app.listen(Number(PORT), ()=>{ console.log(`Servidor iniciado em http://localhos
 // Extração de dados a partir da mensagem para resumo/confirmacao
 function extractIATAFromText(text){
   const raw = String(text || '').trim();
-  const norm = normalizeText(raw);
+  let cleaned = raw
+    .replace(/^(oi|ola|olá|hey|ola tudo bem|agora|agora quero|mas|pois|e|ja|já|também|tbm|eae|e ai)\s+/i, '')
+    .replace(/^(quero|quer|passagem|passagens|uma|um|vou|queria|gostaria|preciso|busco|desejo|gostaria)\s+/i, '')
+    .trim();
+  const norm = normalizeText(cleaned);
 
-  console.log('  🔍 extractIATAFromText:', { raw, norm });
+  console.log('  🔍 extractIATAFromText:', { raw, cleaned, norm });
 
   function isForbiddenToken(tok){
     const t = normalizeText(tok);
@@ -392,18 +396,13 @@ function extractIATAFromText(text){
   ];
 
   for (const pattern of patterns) {
-    const match = raw.match(pattern);
+    const match = cleaned.match(pattern);
     if (match) {
       let left = match[1].trim();
       let right = match[2].trim();
-      left = left
-        .replace(/^(quero|quer|passagem|passagens|ida|volta|uma|um|vou|queria|gostaria|preciso|busco|desejo)\s+/i, '')
-        .replace(/\s+(passagem|passagens)$/i, '')
-        .trim();
-      right = right
-        .replace(/\s+(dia|data|com|sem|partindo|retorno|ida|volta|em|no|na).*$/i, '')
-        .trim();
-      console.log('  📍 Padrão:', { left, right });
+      left = left.replace(/^(quero|quer|passagem|passagens|ida|volta|uma|um|vou|queria|gostaria|preciso|busco|desejo)\s+/i, '').replace(/\s+(passagem|passagens)$/i, '').trim();
+      right = right.replace(/\s+(dia|data|com|sem|partindo|retorno|ida|volta|em|no|na).*$/i, '').trim();
+      console.log('  📍 Padrão encontrado:', { left, right });
       if (left && right && !isForbiddenToken(left) && !isForbiddenToken(right)) {
         const dep = resolveIATA(left);
         const des = resolveIATA(right);
@@ -416,7 +415,7 @@ function extractIATAFromText(text){
     }
   }
 
-  const codes = Array.from(raw.matchAll(/\b([A-Za-z]{3})\b/g))
+  const codes = Array.from(cleaned.matchAll(/\b([A-Za-z]{3})\b/g))
     .map(x => x[1].toUpperCase())
     .filter(c => !IATA_STOPLIST.has(normalizeText(c)));
   console.log('  📍 Códigos IATA:', codes);
@@ -425,8 +424,8 @@ function extractIATAFromText(text){
     return { dep: codes[0], des: codes[1] };
   }
   if (codes.length === 1) {
-    console.log('  📍 Um código encontrado, procurando alias...');
-    const textWithoutCode = raw.replace(new RegExp(`\\b${codes[0]}\\b`, 'i'), '');
+    console.log('  📍 Um código, procurando alias...');
+    const textWithoutCode = cleaned.replace(new RegExp(`\\b${codes[0]}\\b`, 'i'), '');
     for (const entry of IATA_LEXICON) {
       const match = anyAliasMatch(entry, normalizeText(textWithoutCode));
       if (match && entry.code !== codes[0]) {
@@ -444,11 +443,11 @@ function extractIATAFromText(text){
       if (found.length >= 2) break;
     }
   }
-  console.log('  📍 Aliases encontrados:', found);
+  console.log('  📍 Aliases:', found);
   if (found.length >= 2) {
     const exacts = found.filter(f => f.matchType === 'exact').map(f => f.code);
     if (exacts.length >= 2) {
-      console.log('  🎯 RETORNANDO aliases exatos:', exacts);
+      console.log('  🎯 RETORNANDO exatos:', exacts);
       return { dep: exacts[0], des: exacts[1] };
     }
     console.log('  🎯 RETORNANDO aliases:', [found[0].code, found[1].code]);
