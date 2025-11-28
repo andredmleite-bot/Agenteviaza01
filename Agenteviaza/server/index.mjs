@@ -385,20 +385,33 @@ function extractIATAFromText(text){
     return IATA_STOPLIST.has(t);
   }
 
-  const parts = norm.split(/\s+(?:para|pra)\s+/i);
-  if (parts.length >= 2) {
-    let left = parts[0].trim();
-    let right = parts.slice(1).join(' ').trim();
-    left = left.replace(/^(quero|quer|passagem|passagens|ida|volta|de|uma|um|vou|queria)\s+/i, '').trim();
-    right = right.replace(/\s+(ida|volta|dia|data|de|com|sem|partindo|retorno).*$/i, '').trim();
-    console.log('  📍 Encontrou padrão: ', { left, right });
-    if (left && right && !isForbiddenToken(left) && !isForbiddenToken(right)) {
-      const dep = resolveIATA(left);
-      const des = resolveIATA(right);
-      console.log('  ✅ Resolveu IATA:', { dep, des });
-      if (dep && des) {
-        console.log('  🎯 RETORNANDO:', { dep, des });
-        return { dep, des };
+  const patterns = [
+    /de\s+([a-záàâãéèêíïóôõöúçñ\s]+?)\s+(?:para|pra)\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s+(?:dia|data|ida|volta|com|sem)|$)/i,
+    /(?:saindo\s+)?de\s+([a-záàâãéèêíïóôõöúçñ\s]+?)\s+(?:para|pra)\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s|,|$)/i,
+    /([a-záàâãéèêíïóôõöúçñ\s]+?)\s+(?:para|pra)\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s+(?:dia|data|ida|volta)|$)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    if (match) {
+      let left = match[1].trim();
+      let right = match[2].trim();
+      left = left
+        .replace(/^(quero|quer|passagem|passagens|ida|volta|uma|um|vou|queria|gostaria|preciso|busco|desejo)\s+/i, '')
+        .replace(/\s+(passagem|passagens)$/i, '')
+        .trim();
+      right = right
+        .replace(/\s+(dia|data|com|sem|partindo|retorno|ida|volta|em|no|na).*$/i, '')
+        .trim();
+      console.log('  📍 Padrão:', { left, right });
+      if (left && right && !isForbiddenToken(left) && !isForbiddenToken(right)) {
+        const dep = resolveIATA(left);
+        const des = resolveIATA(right);
+        console.log('  ✅ Resolveu:', { dep, des });
+        if (dep && des) {
+          console.log('  🎯 RETORNANDO:', { dep, des });
+          return { dep, des };
+        }
       }
     }
   }
@@ -406,29 +419,16 @@ function extractIATAFromText(text){
   const codes = Array.from(raw.matchAll(/\b([A-Za-z]{3})\b/g))
     .map(x => x[1].toUpperCase())
     .filter(c => !IATA_STOPLIST.has(normalizeText(c)));
-
-  console.log('  📍 Códigos encontrados:', codes);
-
+  console.log('  📍 Códigos IATA:', codes);
   if (codes.length >= 2) {
-    console.log('  🎯 RETORNANDO códigos:', codes);
+    console.log('  🎯 RETORNANDO códigos:', [codes[0], codes[1]]);
     return { dep: codes[0], des: codes[1] };
   }
-
   if (codes.length === 1) {
-    console.log('  📍 Só um código, procurando outro...');
+    console.log('  📍 Um código encontrado, procurando alias...');
+    const textWithoutCode = raw.replace(new RegExp(`\\b${codes[0]}\\b`, 'i'), '');
     for (const entry of IATA_LEXICON) {
-      const match = anyAliasMatch(entry, norm);
-      if (match && entry.code !== codes[0]) {
-        console.log('  🎯 RETORNANDO misto:', [codes[0], entry.code]);
-        return { dep: codes[0], des: entry.code };
-      }
-    }
-  }
-
-  if (codes.length === 1) {
-    console.log('  📍 Só um código, procurando outro...');
-    for (const entry of IATA_LEXICON) {
-      const match = anyAliasMatch(entry, norm);
+      const match = anyAliasMatch(entry, normalizeText(textWithoutCode));
       if (match && entry.code !== codes[0]) {
         console.log('  🎯 RETORNANDO misto:', [codes[0], entry.code]);
         return { dep: codes[0], des: entry.code };
@@ -440,15 +440,19 @@ function extractIATAFromText(text){
   for (const entry of IATA_LEXICON) {
     const match = anyAliasMatch(entry, norm);
     if (match) {
-      found.push(entry.code);
-      console.log('  📍 Encontrou alias:', entry.code);
+      found.push({ code: entry.code, matchType: match.matchType });
       if (found.length >= 2) break;
     }
   }
-
+  console.log('  📍 Aliases encontrados:', found);
   if (found.length >= 2) {
-    console.log('  🎯 RETORNANDO aliases:', found);
-    return { dep: found[0], des: found[1] };
+    const exacts = found.filter(f => f.matchType === 'exact').map(f => f.code);
+    if (exacts.length >= 2) {
+      console.log('  🎯 RETORNANDO aliases exatos:', exacts);
+      return { dep: exacts[0], des: exacts[1] };
+    }
+    console.log('  🎯 RETORNANDO aliases:', [found[0].code, found[1].code]);
+    return { dep: found[0].code, des: found[1].code };
   }
 
   console.log('  ❌ Não encontrou IATA');
