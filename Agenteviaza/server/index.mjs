@@ -40,25 +40,25 @@ function levenshtein(a,b){ a=a||''; b=b||''; const m=a.length,n=b.length; if(m==
 function thresholdFor(len){ if(len<=3) return 1; if(len<=6) return 2; return 3; }
 function parseNumberPt(str){ if(str==null) return undefined; const s=String(str).trim().toLowerCase(); if(/^\d+$/.test(s)) return parseInt(s,10); const map={ zero:0, um:1, uma:1, hum:1, dois:2, duas:2, tres:3, 'três':3, quatro:4, cinco:5, seis:6, sete:7, oito:8, nove:9 }; const key=stripDiacritics(s); return map[key]; }
 const IATA_LEXICON = [
-  { code: 'CNF', city: 'Belo Horizonte', aliases: ['bh', 'confins', 'pampulha', 'beaga'] },
-  { code: 'GRU', city: 'São Paulo', aliases: ['sp', 'guarulhos', 'congonhas', 'soa paulo'] },
+  { code: 'CNF', city: 'Belo Horizonte', aliases: ['cnf', 'belo horizonte', 'bh', 'confins'] },
+  { code: 'GRU', city: 'São Paulo', aliases: ['gru', 'sao paulo', 'são paulo', 'sp'] },
   { code: 'SDU', city: 'Rio de Janeiro', aliases: ['rio', 'santos dumont'] },
   { code: 'GIG', city: 'Rio de Janeiro', aliases: ['galeão', 'tom jobim', 'galeo'] },
   { code: 'BSB', city: 'Brasília', aliases: ['brasília', 'brasilia'] },
-  { code: 'SSA', city: 'Salvador', aliases: ['salvador'] },
+  { code: 'SSA', city: 'Salvador', aliases: ['ssa', 'salvador', 'bahia'] },
   { code: 'REC', city: 'Recife', aliases: ['recife'] },
   { code: 'FLN', city: 'Florianópolis', aliases: ['florianópolis', 'florianopolis'] },
-  { code: 'POA', city: 'Porto Alegre', aliases: ['porto alegre'] },
+  { code: 'POA', city: 'Porto Alegre', aliases: ['poa', 'porto alegre', 'porto-alegre', 'pa'] },
   { code: 'VCP', city: 'Campinas', aliases: ['campinas', 'viracopos'] },
-  { code: 'BEL', city: 'Belém', aliases: ['belém', 'belem'] },
+  { code: 'BEL', city: 'Belém', aliases: ['bel', 'belem', 'belém', 'pa'] },
   { code: 'MAO', city: 'Manaus', aliases: ['manaus'] },
-  { code: 'NAT', city: 'Natal', aliases: ['natal'] },
+  { code: 'NAT', city: 'Natal', aliases: ['nat', 'natal', 'rn'] },
   { code: 'FOR', city: 'Fortaleza', aliases: ['fortaleza'] },
   { code: 'CWB', city: 'Curitiba', aliases: ['curitiba'] },
   { code: 'SAO', city: 'São Paulo', aliases: ['são paulo', 'sao paulo', 'sp'] },
   { code: 'RIO', city: 'Rio de Janeiro', aliases: ['rio de janeiro', 'jjd'] },
   { code: 'CGH', city: 'São Paulo', aliases: ['congonhas', 'sp'] },
-  { code: 'VIX', city: 'Vitória', aliases: ['vitoria'] },
+  { code: 'VIX', city: 'Vitória', aliases: ['vix', 'vitoria', 'vitória', 'es'] },
   { code: 'GYN', city: 'Goiânia', aliases: ['goiania'] },
   { code: 'CGB', city: 'Cuiabá', aliases: ['cuiaba'] },
   { code: 'CGR', city: 'Campo Grande', aliases: ['campo grande'] },
@@ -155,7 +155,7 @@ function withinWindow(iso, days=360){ if(!iso) return false; const now=new Date(
 function parseNaturalDate(input){ if(!input) return undefined; const s=stripDiacritics(String(input).trim().toLowerCase()); if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s; const dm=s.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?$/); if(dm){ const dd=parseInt(dm[1],10); const mm=parseInt(dm[2],10)-1; if(dm[3]){ const yyyy=parseInt(dm[3],10); const d=new Date(yyyy,mm,dd); return toISO(d); } else { const yyyy=new Date().getFullYear(); let d=new Date(yyyy,mm,dd); const today=new Date(); if(d<today) d=new Date(yyyy+1,mm,dd); return toISO(d); } } const mv=s.match(/^mes que vem dia\s*(\d{1,2})$/); if(mv){ const day=parseInt(mv[1],10); const today=new Date(); const nextMonth=new Date(today.getFullYear(), today.getMonth()+1, day); return toISO(nextMonth); } const fer=s.match(/(\d{1,2})\s*de\s*(setembro| setembro)/); if(fer){ const dd=parseInt(fer[1],10); const mm=8; const today=new Date(); let yyyy=today.getFullYear(); let d=new Date(yyyy,mm,dd); if(d<today) d=new Date(yyyy+1,mm,dd); return toISO(d); } const nat=s.replace(/(^|\s)(\d+)[ºo]?\s/g,'$1$2 ').replace(/de\s+/g,' ').trim(); const parts=nat.split(/\s+/); if(parts.length>=2){ const dd=parseInt(parts[0],10); const monthKey=parts[1]; const mm=MONTHS_PT[monthKey]; if(Number.isInteger(dd) && mm!=null){ const today=new Date(); let yyyy=today.getFullYear(); let d=new Date(yyyy,mm,dd); if(d<today) d=new Date(yyyy+1,mm,dd); return toISO(d); } } return undefined; }
 
 function anyAliasMatch(entry, needle){ const n=normalizeText(needle); const terms=[entry.city, ...(entry.aliases||[])].map(normalizeText); if(terms.some(t=>t===n)) return { code: entry.code, matchType: 'exact' }; const distances=terms.map(t=>levenshtein(n,t)); const best=Math.min(...distances); const thr=thresholdFor(n.length); if(best<=thr) return { code: entry.code, matchType: 'fuzzy' }; return null; }
-function resolveIATA(input){ if(!input) return undefined; const raw=String(input).trim(); const s=normalizeText(raw); if(/^[a-z]{4}$/i.test(raw)) return undefined; if(/^[a-z]{3}$/i.test(raw)) return raw.toUpperCase(); for(const entry of IATA_LEXICON){ const m=anyAliasMatch(entry,s); if(m && entry.code!=='SAO' && entry.code!=='RIO'){ return entry.code; } } for(const entry of IATA_LEXICON){ const m=anyAliasMatch(entry,s); if(!m) continue; if(entry.code==='SAO') return 'SAO'; if(entry.code==='RIO') return 'RIO'; if(entry.code==='CNF') return 'CNF'; return entry.code; } console.warn('[IATA] Não reconhecido:', raw); unrecognizedIATA.add(s); return undefined; }
+function resolveIATA(cityName){ if(!cityName) return undefined; const raw=String(cityName).trim(); const clean=normalizeText(raw.toLowerCase()); console.log(`  🔍 resolveIATA("${cityName}") → normalized: "${clean}"`); if(/^[a-z]{3}$/i.test(raw)) return raw.toUpperCase(); for(const entry of IATA_LEXICON){ if(normalizeText(entry.city.toLowerCase())===clean){ console.log(`  ✅ Match exato: ${entry.code}`); return entry.code; } if(entry.aliases&&Array.isArray(entry.aliases)){ for(const alias of entry.aliases){ if(normalizeText(String(alias).toLowerCase())===clean){ console.log(`  ✅ Match alias: ${entry.code}`); return entry.code; } } } } console.log('  ❌ Não encontrou em IATA_LEXICON'); return undefined; }
 function resolveIATAOptions(input){ if(!input) return []; const s=normalizeText(input); for(const entry of IATA_LEXICON){ const m=anyAliasMatch(entry,s); if(!m) continue; const opts=entry.options||[entry.code]; return Array.from(new Set(opts.map(o=>o.toUpperCase()))); } return []; }
 
 const StateSchema = z.object({ dep: z.string().length(3), des: z.string().length(3), adt: z.number().int().min(0), chd: z.number().int().min(0), bby: z.number().int().min(0), dpt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), dst: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(), ec: z.boolean(), ow: z.boolean() })
