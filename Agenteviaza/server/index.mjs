@@ -36,10 +36,10 @@ function levenshtein(a,b){ a=a||''; b=b||''; const m=a.length,n=b.length; if(m==
 function thresholdFor(len){ if(len<=3) return 1; if(len<=6) return 2; return 3; }
 function parseNumberPt(str){ if(str==null) return undefined; const s=String(str).trim().toLowerCase(); if(/^\d+$/.test(s)) return parseInt(s,10); const map={ zero:0, um:1, uma:1, hum:1, dois:2, duas:2, tres:3, 'três':3, quatro:4, cinco:5, seis:6, sete:7, oito:8, nove:9 }; const key=stripDiacritics(s); return map[key]; }
 const IATA_LEXICON = [
-  { code: 'CNF', city: 'Belo Horizonte', aliases: ['bh', 'confins', 'pampulha'] },
-  { code: 'GRU', city: 'São Paulo', aliases: ['sp', 'guarulhos', 'congonhas'] },
+  { code: 'CNF', city: 'Belo Horizonte', aliases: ['bh', 'confins', 'pampulha', 'beaga'] },
+  { code: 'GRU', city: 'São Paulo', aliases: ['sp', 'guarulhos', 'congonhas', 'soa paulo'] },
   { code: 'SDU', city: 'Rio de Janeiro', aliases: ['rio', 'santos dumont'] },
-  { code: 'GIG', city: 'Rio de Janeiro', aliases: ['galeão', 'tom jobim'] },
+  { code: 'GIG', city: 'Rio de Janeiro', aliases: ['galeão', 'tom jobim', 'galeo'] },
   { code: 'BSB', city: 'Brasília', aliases: ['brasília', 'brasilia'] },
   { code: 'SSA', city: 'Salvador', aliases: ['salvador'] },
   { code: 'REC', city: 'Recife', aliases: ['recife'] },
@@ -52,7 +52,7 @@ const IATA_LEXICON = [
   { code: 'FOR', city: 'Fortaleza', aliases: ['fortaleza'] },
   { code: 'CWB', city: 'Curitiba', aliases: ['curitiba'] },
   { code: 'SAO', city: 'São Paulo', aliases: ['são paulo', 'sao paulo', 'sp'] },
-  { code: 'RIO', city: 'Rio de Janeiro', aliases: ['rio de janeiro'] },
+  { code: 'RIO', city: 'Rio de Janeiro', aliases: ['rio de janeiro', 'jjd'] },
   { code: 'CGH', city: 'São Paulo', aliases: ['congonhas', 'sp'] },
   { code: 'VIX', city: 'Vitória', aliases: ['vitoria'] },
   { code: 'GYN', city: 'Goiânia', aliases: ['goiania'] },
@@ -251,68 +251,137 @@ async function processChatMessage(sessionId, message){
 
 app.post('/api/chat', async (req, res) => {
   const { sessionId, message } = req.body || {};
+  
   if (!sessionId || !message) {
-    return res.status(400).send('Parâmetros obrigatórios');
+    return res.status(400).json({ error: 'Parâmetros obrigatórios: sessionId e message' });
   }
+
   try {
     if (!sessions.has(sessionId)) {
       sessions.set(sessionId, []);
     }
     const history = sessions.get(sessionId);
-    history.push({ role: 'user', content: message });
+    history.push({ role: 'user', content: String(message) });
 
-    if (!OPENAI_API_KEY) {
-      return res.status(500).json({ reply: 'Backend sem OPENAI_API_KEY configurada.' });
+    // ✅ PASSO 1: Verifica confirmação com dados pendentes
+    if (isConfirmation(message) && pendingQuotes.has(sessionId)) {
+      try {
+        const url = await buildQuoteLinkStandalone(pendingQuotes.get(sessionId));
+        pendingQuotes.delete(sessionId);
+        const reply = `Pronto! Aqui está sua cotação:\n${url}`;
+        history.push({ role: 'assistant', content: reply });
+        return res.json({ reply });
+      } catch (err) {
+        console.error('❌ Erro ao gerar link:', err.message);
+        pendingQuotes.delete(sessionId);
+        const reply = 'Houve erro ao gerar o link. Tente novamente com os dados completos.';
+        history.push({ role: 'assistant', content: reply });
+        return res.json({ reply });
+      }
     }
 
+    // ✅ PASSO 2: Tenta extrair dados direto (SEM chamar agent)
+    console.log('🔍 Tentando extrair dados da mensagem...');
+    const inferred = computeStateFromMessage(message);
+    
+    if (inferred) {
+      console.log('✅ Dados extraídos:', inferred);
+      pendingQuotes.set(sessionId, inferred);
+      const summary = summaryForState(inferred);
+      const reply = `${summary} Confirma?`;
+      history.push({ role: 'assistant', content: reply });
+      return res.json({ reply });
+    }
+
+    // ✅ PASSO 3: Se não conseguir extrair, chama o agent (requer OPENAI_API_KEY)
+    console.log('🚀 Chamando agent...');
     try {
-      console.log('🚀 Chamando run() com:', message);
+      if (!OPENAI_API_KEY) {
+        return res.status(500).json({ reply: 'Backend sem OPENAI_API_KEY configurada.' });
+      }
       const result = await run(agent, message);
-      console.log('📊 Result recebido');
 
       let reply = null;
       if (result?.state?.modelResponses?.[0]?.output?.[0]?.content?.[0]?.text) {
         reply = result.state.modelResponses[0].output[0].content[0].text;
-        console.log('✅ Extraído de: state.modelResponses');
-      } else if (result?.state?.lastModelResponse?.output?.[0]?.content?.[0]?.text) {
-        reply = result.state.lastModelResponse.output[0].content[0].text;
-        console.log('✅ Extraído de: state.lastModelResponse');
-      } else if (result?.lastModelResponse?.output?.[0]?.content?.[0]?.text) {
-        reply = result.lastModelResponse.output[0].content[0].text;
-        console.log('✅ Extraído de: lastModelResponse');
-      } else if (result?.output_text) {
-        reply = result.output_text;
-        console.log('✅ Extraído de: output_text');
       } else if (result?.finalOutput) {
         reply = result.finalOutput;
-        console.log('✅ Extraído de: finalOutput');
       } else if (typeof result === 'string') {
         reply = result;
-        console.log('✅ Result é string');
       } else {
-        console.log('❌ Não consegui extrair - estrutura:', Object.keys(result || {}));
-        reply = 'Não consegui extrair resposta.';
+        reply = 'Não consegui processar sua mensagem. Por favor, informe: origem, destino, data e número de passageiros.';
       }
 
-      console.log('📤 Respondendo com:', reply);
+      reply = replaceISODatesWithBR(adjustYearsInViazaLink(reply));
       history.push({ role: 'assistant', content: reply });
       return res.json({ reply });
+      
     } catch (err) {
-      console.error('❌ ERRO NO AGENT:');
-      console.error('  Mensagem:', err.message);
-      console.error('  Stack:', err.stack);
-      return res.status(500).json({ reply: 'Instabilidade no agente. Tente novamente.' });
+      console.error('❌ ERRO NO AGENT:', err.message);
+      return res.status(500).json({
+        reply: 'Desculpe, tive um problema ao processar. Por favor, confirme: origem, destino, data e passageiros.'
+      });
     }
+
   } catch (err) {
     console.error('❌ Erro geral:', err);
-    return res.status(500).json({ reply: 'Erro interno.' });
+    return res.status(500).json({ reply: 'Erro interno. Tente novamente.' });
   }
 });
 
 function evoDigits(n){ return String(n||'').replace(/\D+/g,''); }
 async function evoSendText(number,text){ if(!EVO_API_URL||!EVO_API_KEY||!EVO_INSTANCE) return false; const base=String(EVO_API_URL).replace(/\/+$/,''); const url=`${base}/message/sendText/${EVO_INSTANCE}`; const body={ number:evoDigits(number), textMessage:{ text:String(text||'') } }; const r=await fetch(url,{ method:'POST', headers:{ 'Content-Type':'application/json', apikey:EVO_API_KEY }, body: JSON.stringify(body) }); return r.ok; }
 function parseEvoPayload(body){ let text=null; let number=null; const m=body?.messages?.[0]; text=m?.message?.conversation||m?.message?.extendedTextMessage?.text||m?.message?.textMessage?.text||body?.textMessage?.text||body?.message?.textMessage?.text||body?.message?.conversation||body?.message?.extendedTextMessage?.text||body?.text; const jid=m?.key?.remoteJid||body?.key?.remoteJid||null; if(jid) number=evoDigits(String(jid).split('@')[0]); if(!number) number=body?.number||body?.sender?.phone||body?.phone||null; number=number?evoDigits(number):null; return { text, number }; }
-app.post('/webhook/evo', async (req,res)=>{ try{ const { text, number }=parseEvoPayload(req.body||{}); if(!text||!number) return res.json({ ok:true }); const sid=number; const result=await processChatMessage(sid, String(text)); if(result?.reply) await evoSendText(number, result.reply); return res.json({ ok:true }); } catch { return res.json({ ok:true }); } });
+app.post('/webhook/evo', async (req,res)=>{
+  try {
+    const { text, number } = parseEvoPayload(req.body || {});
+    if (!text || !number) return res.json({ ok: true });
+    const sid = number;
+    if (!sessions.has(sid)) sessions.set(sid, []);
+    const history = sessions.get(sid);
+    history.push({ role: 'user', content: String(text) });
+
+    if (!OPENAI_API_KEY) {
+      await evoSendText(number, 'Erro: API key não configurada');
+      return res.json({ ok: true });
+    }
+
+    const inferred = computeStateFromMessage(text);
+    let reply = '';
+
+    if (isConfirmation(text) && pendingQuotes.has(sid)) {
+      try {
+        const url = await buildQuoteLinkStandalone(pendingQuotes.get(sid));
+        pendingQuotes.delete(sid);
+        reply = `Pronto! Aqui está sua cotação:\n${url}`;
+        history.push({ role: 'assistant', content: reply });
+      } catch (err) {
+        pendingQuotes.delete(sid);
+        reply = 'Houve erro ao gerar o link. Tente novamente com os dados completos.';
+        history.push({ role: 'assistant', content: reply });
+      }
+    } else if (inferred) {
+      pendingQuotes.set(sid, inferred);
+      const summary = summaryForState(inferred);
+      reply = `${summary} Confirma?`;
+      history.push({ role: 'assistant', content: reply });
+    } else {
+      try {
+        const result = await run(agent, text);
+        reply = result?.state?.modelResponses?.[0]?.output?.[0]?.content?.[0]?.text || result?.finalOutput || 'Desculpe, não consegui processar.';
+        reply = replaceISODatesWithBR(adjustYearsInViazaLink(reply));
+        history.push({ role: 'assistant', content: reply });
+      } catch (err) {
+        reply = 'Desculpe, tive um problema. Tente novamente.';
+      }
+    }
+
+    if (reply) await evoSendText(number, reply);
+    return res.json({ ok: true });
+  } catch {
+    return res.json({ ok: true });
+  }
+});
 app.post('/evo/send-text', async (req,res)=>{ try{ const number=req.body?.number||req.query?.number; const text=req.body?.text||req.query?.text||'Teste Viaza: integração Evolution ativa.'; if(!number) return res.status(400).send('number'); const ok=await evoSendText(number,text); return res.json({ ok, number: evoDigits(number), text }); } catch(err){ return res.status(500).send(String(err?.message||err)); } });
 
 app.listen(Number(PORT), ()=>{ console.log(`Servidor iniciado em http://localhost:${PORT}`); });
