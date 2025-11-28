@@ -374,5 +374,55 @@ app.listen(Number(PORT), ()=>{ console.log(`Servidor iniciado em http://localhos
 function extractIATAFromText(text){ const raw=String(text||'').trim(); const norm=normalizeText(raw); function isForbiddenToken(tok){ const t=normalizeText(tok); return IATA_STOPLIST.has(t); } let m=norm.match(/\bsaindo\s+de\s+(.+?)\s+(?:pra|para)\s+(.+)/i); if(!m) m=norm.match(/\bde\s+(.+?)\s+(?:pra|para|\u2192|\-\>|\-)\s+(.+)/i); if(m){ const left=m[1].trim(); const right=m[2].trim(); if(!isForbiddenToken(left)&&!isForbiddenToken(right)){ const dep=resolveIATA(left); const des=resolveIATA(right); if(dep&&des&&OFFICIAL_IATA.has(dep)&&OFFICIAL_IATA.has(des)) return { dep, des }; } } const codes=Array.from(raw.matchAll(/\b([A-Za-z]{3})\b/g)).map(x=>x[1].toUpperCase()).filter(c=>OFFICIAL_IATA.has(c)&&!IATA_STOPLIST.has(normalizeText(c))); if(codes.length>=2) return { dep: codes[0], des: codes[1] }; const found=[]; for(const entry of IATA_LEXICON){ const match=anyAliasMatch(entry,norm); if(match&&OFFICIAL_IATA.has(entry.code)){ found.push(entry.code); if(found.length>=2) break; } } if(found.length>=2) return { dep: found[0], des: found[1] }; if(found.length===1) return { dep: found[0], des: null }; return null; }
 function extractDatesFromText(text){ const raw=stripDiacritics(String(text||'').toLowerCase()); const candidates=[]; const isoMatches=raw.match(/\b\d{4}-\d{2}-\d{2}\b/g)||[]; candidates.push(...isoMatches); const dmMatches=raw.match(/\b\d{1,2}\/\d{1,2}(?:\/\d{4})?\b/g)||[]; candidates.push(...dmMatches); const monthKeys=Object.keys(MONTHS_PT).join('|'); const natMatches=Array.from(raw.matchAll(new RegExp(`(\\d{1,2})\\s*(?:de\\s*)?(${monthKeys})`,'g'))).map(m=>`${m[1]} ${m[2]}`); candidates.push(...natMatches); const parsed=[]; for(const c of candidates){ const iso=parseNaturalDate(c); if(iso) parsed.push(iso); if(parsed.length>=2) break; } const dpt=parsed[0]||null; const dst=parsed[1]||null; if(!dpt) return null; if(!withinWindow(dpt)) return null; if(dst){ if(!withinWindow(dst)) return null; if(new Date(dst)<new Date(dpt)) return null; } return { dpt, dst, ow: !dst }; }
 function extractPassengersFromText(text){ const s=stripDiacritics(String(text||'').toLowerCase()); const num=(v)=>parseNumberPt(v)??(isNaN(Number(v))?undefined:Number(v)); const mAdt=s.match(/(\d+|uma|um|duas|dois|tres|três|quatro|cinco|seis|sete|oito|nove)\s*adult/); const mChd=s.match(/(\d+|uma|um|duas|dois|tres|três|quatro|cinco|seis|sete|oito|nove)\s*crianc/); const mBby=s.match(/(\d+|uma|um|duas|dois|tres|três|quatro|cinco|seis|sete|oito|nove)\s*beb/); const adt=num(mAdt?.[1])??1; const chd=num(mChd?.[1])??0; const bby=num(mBby?.[1])??0; if(adt+chd+bby>9) return null; return { adt, chd, bby }; }
-function computeStateFromMessage(message){ const places=extractIATAFromText(message); const dates=extractDatesFromText(message); const pax=extractPassengersFromText(message); if(!places||!dates||!pax) return null; if(!places.dep||!places.des) return null; const total=(pax.adt||0)+(pax.chd||0)+(pax.bby||0); if(total<0||total>9) return null; const ow=!!dates.ow; const dst=ow?null:(dates.dst||null); if(!ow&&!dst) return null; const dep=String(places.dep).toUpperCase(); const des=String(places.des).toUpperCase(); if(!OFFICIAL_IATA.has(dep)||!OFFICIAL_IATA.has(des)) return null; if(dep===des) return null; return { dep, des, adt:pax.adt, chd:pax.chd, bby:pax.bby, dpt:dates.dpt, dst, ec:true, ow }; }
+function computeStateFromMessage(message){
+  console.log('🔧 computeStateFromMessage chamada com:', message);
+
+  const places = extractIATAFromText(message);
+  console.log('  → places:', places);
+
+  const dates = extractDatesFromText(message);
+  console.log('  → dates:', dates);
+
+  const pax = extractPassengersFromText(message);
+  console.log('  → pax:', pax);
+
+  if(!places||!dates||!pax){
+    console.log('  ❌ Faltam dados!');
+    return null;
+  }
+
+  if(!places.dep||!places.des){
+    console.log('  ❌ Faltam IATA!');
+    return null;
+  }
+
+  const total=(pax.adt||0)+(pax.chd||0)+(pax.bby||0);
+  if(total<0||total>9){
+    console.log('  ❌ Total de passageiros inválido:', total);
+    return null;
+  }
+
+  const ow=!!dates.ow;
+  const dst=ow?null:(dates.dst||null);
+  if(!ow&&!dst){
+    console.log('  ❌ Sem data de volta!');
+    return null;
+  }
+
+  const dep=String(places.dep).toUpperCase();
+  const des=String(places.des).toUpperCase();
+  if(!OFFICIAL_IATA.has(dep)||!OFFICIAL_IATA.has(des)){
+    console.log('  ❌ IATA não oficial:', { dep, des });
+    return null;
+  }
+
+  if(dep===des){
+    console.log('  ❌ Origem = Destino');
+    return null;
+  }
+
+  const state = { dep, des, adt:pax.adt, chd:pax.chd, bby:pax.bby, dpt:dates.dpt, dst, ec:true, ow };
+  console.log('  ✅ State completo:', state);
+  return state;
+}
 function summaryForState(state){ const dptBr=formatISOToBR(state.dpt); const hasDst=!!state.dst; const dstBr=hasDst?formatISOToBR(state.dst):null; const pax=[]; if(state.adt>0) pax.push(`${state.adt} adulto(s)`); if(state.chd>0) pax.push(`${state.chd} criança(s)`); if(state.bby>0) pax.push(`${state.bby} bebê(s)`); const paxStr=pax.join(', '); const dstPart=hasDst?` e volta ${dstBr}`:''; return `Resumo: origem ${state.dep}, destino ${state.des}, ida ${dptBr}${dstPart}.${paxStr?` Passageiros: ${paxStr}.`:''} Posso cotar?`; }
