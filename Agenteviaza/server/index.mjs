@@ -307,20 +307,22 @@ app.post('/api/chat', async (req, res) => {
       } else {
         const summary = formatStateMessage(merged);
         const missing = [];
-        if (!merged.dep || !merged.des) missing.push('origem e destino');
-        if (!merged.dpt) missing.push('data');
-        if ((merged.adt||0)+(merged.chd||0)+(merged.bby||0)===0) missing.push('número de passageiros');
-        const reply = `${summary}\n\n📝 Ainda preciso: ${missing.join(', ')}`;
+        if (!merged.dep || !merged.des) missing.push('**origem e destino**');
+        if (!merged.dpt) missing.push('**data de ida**');
+        if (!merged.dst && !merged.ow) missing.push('**data de volta**');
+        if ((merged.adt||0)+(merged.chd||0)+(merged.bby||0)===0) missing.push('**número de passageiros**');
+        const reply = `${summary}\n\n📝 Ainda preciso de: ${missing.join(', ')}`;
         history.push({ role: 'assistant', content: reply });
         return res.json({ reply });
       }
     }
 
-    console.log('📊 Tentando preencher dados parciais...');
+    console.log('📊 Preenchendo dados parciais...');
+    let hasNewData = false;
     const dates = extractDatesFromText(message);
-    if (dates && dates.dpt) { mergeStateData(sessionId, { dpt: dates.dpt, dst: dates.dst, ow: dates.ow }); console.log('✅ Data extraída e armazenada'); }
+    if (dates && dates.dpt) { mergeStateData(sessionId, { dpt: dates.dpt, dst: dates.dst, ow: dates.ow }); hasNewData = true; console.log('✅ Data armazenada'); }
     const pax = extractPassengersFromText(message);
-    if (pax && ((pax.adt||0)+(pax.chd||0)+(pax.bby||0)>0)) { mergeStateData(sessionId, { adt: pax.adt, chd: pax.chd, bby: pax.bby }); console.log('✅ Passageiros extraídos e armazenados'); }
+    if (pax && ((pax.adt||0)+(pax.chd||0)+(pax.bby||0)>0)) { mergeStateData(sessionId, { adt: pax.adt, chd: pax.chd, bby: pax.bby }); hasNewData = true; console.log('✅ Passageiros armazenados'); }
     state = getSessionState(sessionId);
     if (isStateComplete(state)) {
       const summary = formatStateMessage(state);
@@ -329,13 +331,25 @@ app.post('/api/chat', async (req, res) => {
       return res.json({ reply });
     }
 
-    console.log('🚀 Chamando agent para processar...');
+    if (hasNewData) {
+      console.log('📋 Mostrando estado e pedindo resto...');
+      const summary = formatStateMessage(state);
+      const missing = [];
+      if (!state.dep || !state.des) missing.push('**origem e destino**');
+      if (!state.dpt) missing.push('**data de ida**');
+      if (!state.dst && !state.ow) missing.push('**data de volta**');
+      if ((state.adt||0)+(state.chd||0)+(state.bby||0)===0) missing.push('**número de passageiros**');
+      const reply = `${summary}\n\n📝 Ainda preciso de: ${missing.join(', ')}`;
+      history.push({ role: 'assistant', content: reply });
+      return res.json({ reply });
+    }
+
+    console.log('🚀 Nenhum dado extraído. Chamando agent...');
     try {
       const result = await run(agent, message);
       let reply = null;
-      if (result?.state?.modelResponses?.[0]?.output?.[0]?.content?.[0]?.text) {
-        reply = result.state.modelResponses[0].output[0].content[0].text;
-      } else if (result?.finalOutput) { reply = result.finalOutput; }
+      if (result?.state?.modelResponses?.[0]?.output?.[0]?.content?.[0]?.text) { reply = result.state.modelResponses[0].output[0].content[0].text; }
+      else if (result?.finalOutput) { reply = result.finalOutput; }
       else if (typeof result === 'string') { reply = result; }
       else { reply = 'Não consegui processar sua mensagem.'; }
       reply = replaceISODatesWithBR(adjustYearsInViazaLink(reply));
