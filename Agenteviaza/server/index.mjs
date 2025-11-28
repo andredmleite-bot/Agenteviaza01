@@ -82,12 +82,51 @@ function isConfirmation(text){ const s=normalizeText(String(text||'')); return /
 app.get('/', (req,res)=>{ res.json({ name:'Viaza Agent API', message:'Use POST /api/chat para interagir com o agente.', health:'/api/health', chat:'/api/chat' }); });
 app.get('/api/health',(req,res)=>{ res.json({ ok:true }); });
 
-app.post('/api/chat', async (req, res) => { const { sessionId, message } = req.body || {}; if (!sessionId || !message) return res.status(400).send('Parâmetros obrigatórios'); try { if (!sessions.has(sessionId)) sessions.set(sessionId, []); const history = sessions.get(sessionId); history.push({ role: 'user', content: String(message) }); if (isConfirmation(message) && pendingQuotes.has(sessionId)) { try { const url = await buildQuoteLinkStandalone(pendingQuotes.get(sessionId)); pendingQuotes.delete(sessionId); const reply = `Pronto! Aqui está sua cotação:\n${url}`; history.push({ role: 'assistant', content: reply }); return res.json({ reply }); } catch (err) { pendingQuotes.delete(sessionId); const reply = 'Erro ao gerar link após confirmação. Vamos ajustar dados e tentar novamente?'; history.push({ role: 'assistant', content: reply }); return res.json({ reply }); } } if (!OPENAI_API_KEY) { return res.status(500).json({ reply: 'Backend sem OPENAI_API_KEY configurada.' }); } try { const prompt = `Cliente: ${String(message)}\nAssistente:`; const result = await run(agent, prompt); const reply = result?.finalOutput ?? 'Não consegui gerar resposta.'; const adjusted = replaceISODatesWithBR(adjustYearsInViazaLink(reply)); history.push({ role: 'assistant', content: adjusted }); return res.json({ reply: adjusted }); } catch (err) { console.error('❌ ERRO NO AGENTE:', err); return res.status(500).json({ reply: 'Instabilidade no agente. Tente novamente.' }); } } catch (err) { console.error('Erro geral:', err); return res.status(500).json({ reply: 'Erro interno.' }); } });
+async function processChatMessage(sessionId, message){
+  if (!sessionId || typeof message !== 'string' || !message.trim()) {
+    return { status: 400, error: 'Parâmetros inválidos: sessionId e message são obrigatórios.' };
+  }
+  if (!sessions.has(sessionId)) sessions.set(sessionId, []);
+  const history = sessions.get(sessionId);
+  history.push({ role: 'user', content: String(message) });
+  if (isConfirmation(message) && pendingQuotes.has(sessionId)) {
+    try {
+      const url = await buildQuoteLinkStandalone(pendingQuotes.get(sessionId));
+      pendingQuotes.delete(sessionId);
+      const reply = `Pronto! Aqui está sua cotação:\n${url}`;
+      history.push({ role: 'assistant', content: reply });
+      return { reply, note: 'confirmed_quote' };
+    } catch (err) {
+      pendingQuotes.delete(sessionId);
+      const reply = 'Houve erro ao gerar o link após sua confirmação. Vamos ajustar dados (IATA, datas, passageiros) e tentar novamente?';
+      history.push({ role: 'assistant', content: reply });
+      return { reply, note: 'quote_error_after_confirmation' };
+    }
+  }
+  if (!OPENAI_API_KEY) return { status: 500, error: 'Backend sem OPENAI_API_KEY configurada.' };
+  try {
+    const prompt = `Cliente: ${String(message)}\nAssistente:`;
+    const result = await run(agent, prompt);
+    let reply = result?.finalOutput ?? 'Não consegui gerar resposta.';
+    reply = replaceISODatesWithBR(adjustYearsInViazaLink(reply));
+    history.push({ role: 'assistant', content: reply });
+    return { reply };
+  } catch (err) {
+    return { status: 500, error: 'Instabilidade no agente. Tente novamente.' };
+  }
+}
+
+app.post('/api/chat', async (req, res) => {
+  const { sessionId, message } = req.body || {};
+  const result = await processChatMessage(sessionId, message);
+  if (result?.status) return res.status(result.status).send(result.error || 'Erro');
+  return res.json(result);
+});
 
 function evoDigits(n){ return String(n||'').replace(/\D+/g,''); }
 async function evoSendText(number,text){ if(!EVO_API_URL||!EVO_API_KEY||!EVO_INSTANCE) return false; const base=String(EVO_API_URL).replace(/\/+$/,''); const url=`${base}/message/sendText/${EVO_INSTANCE}`; const body={ number:evoDigits(number), textMessage:{ text:String(text||'') } }; const r=await fetch(url,{ method:'POST', headers:{ 'Content-Type':'application/json', apikey:EVO_API_KEY }, body: JSON.stringify(body) }); return r.ok; }
 function parseEvoPayload(body){ let text=null; let number=null; const m=body?.messages?.[0]; text=m?.message?.conversation||m?.message?.extendedTextMessage?.text||m?.message?.textMessage?.text||body?.textMessage?.text||body?.message?.textMessage?.text||body?.message?.conversation||body?.message?.extendedTextMessage?.text||body?.text; const jid=m?.key?.remoteJid||body?.key?.remoteJid||null; if(jid) number=evoDigits(String(jid).split('@')[0]); if(!number) number=body?.number||body?.sender?.phone||body?.phone||null; number=number?evoDigits(number):null; return { text, number }; }
-app.post('/webhook/evo', async (req,res)=>{ try{ const { text, number }=parseEvoPayload(req.body||{}); if(!text||!number) return res.json({ ok:true }); const sid=number; const result=await run(agent, `Cliente: ${text}\nAssistente:`); if(result?.finalOutput) await evoSendText(number, result.finalOutput); return res.json({ ok:true }); } catch { return res.json({ ok:true }); } });
+app.post('/webhook/evo', async (req,res)=>{ try{ const { text, number }=parseEvoPayload(req.body||{}); if(!text||!number) return res.json({ ok:true }); const sid=number; const result=await processChatMessage(sid, String(text)); if(result?.reply) await evoSendText(number, result.reply); return res.json({ ok:true }); } catch { return res.json({ ok:true }); } });
 app.post('/evo/send-text', async (req,res)=>{ try{ const number=req.body?.number||req.query?.number; const text=req.body?.text||req.query?.text||'Teste Viaza: integração Evolution ativa.'; if(!number) return res.status(400).send('number'); const ok=await evoSendText(number,text); return res.json({ ok, number: evoDigits(number), text }); } catch(err){ return res.status(500).send(String(err?.message||err)); } });
 
 app.listen(Number(PORT), ()=>{ console.log(`Servidor iniciado em http://localhost:${PORT}`); });
