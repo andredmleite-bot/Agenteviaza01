@@ -21,6 +21,7 @@ app.use(express.json());
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
 const sessions = new Map();
+const sessionState = new Map();
 const unrecognizedIATA = new Set();
 const OFFICIAL_IATA = new Set([
   'BSB','CGH','GIG','SSA','FLN','POA','VCP','REC','CWB','BEL','VIX','SDU','CGB','CGR','FOR','MCP','MGF','GYN','NVT','MAO','NAT','BPS','MCZ','PMW','SLZ','GRU','LDB','PVH','RBR','JOI','UDI','CXJ','IGU','THE','AJU','JPA','PNZ','CNF','BVB','CPV','STM','IOS','JDO','IMP','XAP','MAB','CZS','PPB','CFB','FEN','JTC','MOC','SAO','RIO',
@@ -239,76 +240,110 @@ async function processChatMessage(sessionId, message){
 
 app.post('/api/chat', async (req, res) => {
   const { sessionId, message } = req.body || {};
-  
   if (!sessionId || !message) {
     return res.status(400).json({ error: 'Parâmetros obrigatórios: sessionId e message' });
   }
 
   try {
-    if (!sessions.has(sessionId)) {
-      sessions.set(sessionId, []);
-    }
+    if (!sessions.has(sessionId)) { sessions.set(sessionId, []); }
     const history = sessions.get(sessionId);
     history.push({ role: 'user', content: String(message) });
 
-    // ✅ PASSO 1: Verifica confirmação com dados pendentes
-    if (isConfirmation(message) && pendingQuotes.has(sessionId)) {
+    if (!OPENAI_API_KEY) {
+      return res.status(500).json({ reply: 'Backend sem OPENAI_API_KEY configurada.' });
+    }
+
+    function getSessionState(sid){ return sessionState.get(sid) || {}; }
+    function isStateComplete(s){
+      if (!s) return false;
+      const total = (s.adt||0)+(s.chd||0)+(s.bby||0);
+      const dep = s.dep && String(s.dep).toUpperCase();
+      const des = s.des && String(s.des).toUpperCase();
+      const ow = !!s.ow;
+      const hasDstOk = ow ? true : !!s.dst;
+      return !!dep && !!des && dep!==des && OFFICIAL_IATA.has(dep) && OFFICIAL_IATA.has(des) && !!s.dpt && total>0 && hasDstOk;
+    }
+    function mergeStateData(sid, partial){ const cur=getSessionState(sid); const merged={ ...cur, ...partial }; sessionState.set(sid, merged); return merged; }
+    function formatStateMessage(s){ return summaryForState(s); }
+
+    let state = getSessionState(sessionId);
+    console.log('📋 Estado atual:', state);
+
+    if (isStateComplete(state) && isConfirmation(message)) {
+      console.log('✅ Estado completo e confirmado! Gerando link...');
       try {
-        const url = await buildQuoteLinkStandalone(pendingQuotes.get(sessionId));
-        pendingQuotes.delete(sessionId);
-        const reply = `Pronto! Aqui está sua cotação:\n${url}`;
+        const url = await buildQuoteLinkStandalone(state);
+        sessionState.delete(sessionId);
+        console.log('🧹 Memória da sessão limpa!');
+        const reply = `🎉 Pronto! Aqui está sua cotação:\n${url}\n\nDeseja outra cotação?`;
         history.push({ role: 'assistant', content: reply });
         return res.json({ reply });
       } catch (err) {
         console.error('❌ Erro ao gerar link:', err.message);
-        pendingQuotes.delete(sessionId);
-        const reply = 'Houve erro ao gerar o link. Tente novamente com os dados completos.';
+        sessionState.delete(sessionId);
+        console.log('🧹 Memória limpa após erro!');
+        const reply = 'Houve erro ao gerar o link. Vamos começar uma nova cotação? Informe origem, destino, data e passageiros.';
         history.push({ role: 'assistant', content: reply });
         return res.json({ reply });
       }
     }
 
-    // ✅ PASSO 2: Tenta extrair dados direto (SEM chamar agent)
-    console.log('🔍 Tentando extrair dados da mensagem...');
+    console.log('🔍 Extraindo dados da mensagem...');
     const inferred = computeStateFromMessage(message);
-    
     if (inferred) {
-      console.log('✅ Dados extraídos:', inferred);
-      pendingQuotes.set(sessionId, inferred);
-      const summary = summaryForState(inferred);
-      const reply = `${summary} Confirma?`;
+      console.log('✅ Novos dados encontrados:', inferred);
+      if (Object.keys(state).length > 0 && (state.dep !== inferred.dep || state.des !== inferred.des)) {
+        console.log('🔄 Novo pedido detectado! Limpando memória anterior...');
+        sessionState.delete(sessionId);
+        state = {};
+        console.log('🧹 Memória limpa para novo pedido!');
+      }
+      const merged = mergeStateData(sessionId, { dep: inferred.dep, des: inferred.des, dpt: inferred.dpt, dst: inferred.dst, adt: inferred.adt, chd: inferred.chd, bby: inferred.bby, ec: inferred.ec, ow: inferred.ow });
+      if (isStateComplete(merged)) {
+        const summary = formatStateMessage(merged);
+        const reply = `${summary}\n\n✅ Dados completos! Confirma?`;
+        history.push({ role: 'assistant', content: reply });
+        return res.json({ reply });
+      } else {
+        const summary = formatStateMessage(merged);
+        const missing = [];
+        if (!merged.dep || !merged.des) missing.push('origem e destino');
+        if (!merged.dpt) missing.push('data');
+        if ((merged.adt||0)+(merged.chd||0)+(merged.bby||0)===0) missing.push('número de passageiros');
+        const reply = `${summary}\n\n📝 Ainda preciso: ${missing.join(', ')}`;
+        history.push({ role: 'assistant', content: reply });
+        return res.json({ reply });
+      }
+    }
+
+    console.log('📊 Tentando preencher dados parciais...');
+    const dates = extractDatesFromText(message);
+    if (dates && dates.dpt) { mergeStateData(sessionId, { dpt: dates.dpt, dst: dates.dst, ow: dates.ow }); console.log('✅ Data extraída e armazenada'); }
+    const pax = extractPassengersFromText(message);
+    if (pax && ((pax.adt||0)+(pax.chd||0)+(pax.bby||0)>0)) { mergeStateData(sessionId, { adt: pax.adt, chd: pax.chd, bby: pax.bby }); console.log('✅ Passageiros extraídos e armazenados'); }
+    state = getSessionState(sessionId);
+    if (isStateComplete(state)) {
+      const summary = formatStateMessage(state);
+      const reply = `${summary}\n\n✅ Dados completos! Confirma?`;
       history.push({ role: 'assistant', content: reply });
       return res.json({ reply });
     }
 
-    // ✅ PASSO 3: Se não conseguir extrair, chama o agent (requer OPENAI_API_KEY)
-    console.log('🚀 Chamando agent...');
+    console.log('🚀 Chamando agent para processar...');
     try {
-      if (!OPENAI_API_KEY) {
-        return res.status(500).json({ reply: 'Backend sem OPENAI_API_KEY configurada.' });
-      }
       const result = await run(agent, message);
-
       let reply = null;
       if (result?.state?.modelResponses?.[0]?.output?.[0]?.content?.[0]?.text) {
         reply = result.state.modelResponses[0].output[0].content[0].text;
-      } else if (result?.finalOutput) {
-        reply = result.finalOutput;
-      } else if (typeof result === 'string') {
-        reply = result;
-      } else {
-        reply = 'Não consegui processar sua mensagem. Por favor, informe: origem, destino, data e número de passageiros.';
-      }
-
+      } else if (result?.finalOutput) { reply = result.finalOutput; }
+      else if (typeof result === 'string') { reply = result; }
+      else { reply = 'Não consegui processar sua mensagem.'; }
       reply = replaceISODatesWithBR(adjustYearsInViazaLink(reply));
       history.push({ role: 'assistant', content: reply });
       return res.json({ reply });
-      
     } catch (err) {
       console.error('❌ ERRO NO AGENT:', err.message);
-      return res.status(500).json({
-        reply: 'Desculpe, tive um problema ao processar. Por favor, confirme: origem, destino, data e passageiros.'
-      });
+      return res.status(500).json({ reply: 'Desculpe, tive um problema. Pode repetir sua solicitação?' });
     }
 
   } catch (err) {
