@@ -362,6 +362,57 @@ app.post('/api/chat', async (req, res) => {
 function evoDigits(n){ return String(n||'').replace(/\D+/g,''); }
 async function evoSendText(number,text){ if(!EVO_API_URL||!EVO_API_KEY||!EVO_INSTANCE) return false; const base=String(EVO_API_URL).replace(/\/+$/,''); const url=`${base}/message/sendText/${EVO_INSTANCE}`; const body={ number:evoDigits(number), textMessage:{ text:String(text||'') } }; const r=await fetch(url,{ method:'POST', headers:{ 'Content-Type':'application/json', apikey:EVO_API_KEY }, body: JSON.stringify(body) }); return r.ok; }
 function parseEvoPayload(body){ let text=null; let number=null; const m=body?.messages?.[0]; text=m?.message?.conversation||m?.message?.extendedTextMessage?.text||m?.message?.textMessage?.text||body?.textMessage?.text||body?.message?.textMessage?.text||body?.message?.conversation||body?.message?.extendedTextMessage?.text||body?.text; const jid=m?.key?.remoteJid||body?.key?.remoteJid||null; if(jid) number=evoDigits(String(jid).split('@')[0]); if(!number) number=body?.number||body?.sender?.phone||body?.phone||null; number=number?evoDigits(number):null; return { text, number }; }
+function extractAllData(text){
+  if (!text) return {};
+  console.log(`\n🔍 extractAllData: "${text}"`);
+  const result = {};
+  const iataMatch = text.match(/([a-záàâãéèêíïóôõöúçñ]+)\s+(?:para|pra)\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s+dia|\s+com|$|,)/i);
+  if (iataMatch) {
+    const depCity = iataMatch[1].trim();
+    const desCity = iataMatch[2].trim();
+    console.log(`  📍 Padrão encontrado: "${depCity}" → "${desCity}"`);
+    const dep = resolveIATA(depCity);
+    const des = resolveIATA(desCity);
+    console.log(`  🔍 Resolvido: ${dep} → ${des}`);
+    if (dep && des) {
+      result.dep = dep;
+      result.des = des;
+      console.log(`  ✅ IATA FINAL: ${dep} → ${des}`);
+    } else {
+      console.log('  ❌ Não conseguiu resolver');
+    }
+  } else {
+    console.log('  ❌ Padrão "X para Y" não encontrado');
+  }
+  const dateMatch = text.match(/dia\s+(\d{1,2})\/(\d{1,2})/i);
+  if (dateMatch) {
+    const day = dateMatch[1].padStart(2, '0');
+    const month = dateMatch[2].padStart(2, '0');
+    const year = new Date().getFullYear();
+    result.dpt = `${year}-${month}-${day}`;
+    console.log(`  ✅ Data ida: ${result.dpt}`);
+    const returnMatch = text.match(/volta\s+(\d{1,2})\/(\d{1,2})|retorno\s+(\d{1,2})\/(\d{1,2})/i);
+    if (returnMatch) {
+      const retDay = (returnMatch[1] || returnMatch[3]).padStart(2, '0');
+      const retMonth = (returnMatch[2] || returnMatch[4]).padStart(2, '0');
+      result.dst = `${year}-${retMonth}-${retDay}`;
+      result.ow = false;
+      console.log(`  ✅ Data volta: ${result.dst}`);
+    } else {
+      result.ow = true;
+      console.log('  ✅ Só ida');
+    }
+  }
+  const adtMatch = text.match(/(\d+)\s*(?:adulto|adult)/i);
+  if (adtMatch) { result.adt = parseInt(adtMatch[1]); }
+  const chdMatch = text.match(/(\d+)\s*(?:criança|criancas|crianças|child)/i);
+  if (chdMatch) { result.chd = parseInt(chdMatch[1]); }
+  const bbyMatch = text.match(/(\d+)\s*(?:bebê|baby|bebe)/i);
+  if (bbyMatch) { result.bby = parseInt(bbyMatch[1]); }
+  console.log('  📦 FINAL:', result);
+  return result;
+}
+
 app.post('/webhook/evo', async (req,res)=>{
   try {
     const { text, number } = parseEvoPayload(req.body || {});
