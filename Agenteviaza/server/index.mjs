@@ -268,17 +268,18 @@ app.post('/api/chat', async (req, res) => {
     try {
       console.log('🚀 Chamando run() com:', message);
       const result = await run(agent, message);
-      console.log('📊 Tipo de result:', typeof result);
-      console.log('📊 Keys de result:', Object.keys(result || {}));
-      console.log('📊 Result completo:', JSON.stringify(result, null, 2));
+      console.log('📊 Result recebido');
 
       let reply = null;
-      if (result?.lastModelResponse?.output?.[0]?.content?.[0]?.text) {
-        reply = result.lastModelResponse.output[0].content[0].text;
-        console.log('✅ Extraído de: lastModelResponse');
+      if (result?.state?.modelResponses?.[0]?.output?.[0]?.content?.[0]?.text) {
+        reply = result.state.modelResponses[0].output[0].content[0].text;
+        console.log('✅ Extraído de: state.modelResponses');
       } else if (result?.state?.lastModelResponse?.output?.[0]?.content?.[0]?.text) {
         reply = result.state.lastModelResponse.output[0].content[0].text;
         console.log('✅ Extraído de: state.lastModelResponse');
+      } else if (result?.lastModelResponse?.output?.[0]?.content?.[0]?.text) {
+        reply = result.lastModelResponse.output[0].content[0].text;
+        console.log('✅ Extraído de: lastModelResponse');
       } else if (result?.output_text) {
         reply = result.output_text;
         console.log('✅ Extraído de: output_text');
@@ -289,8 +290,8 @@ app.post('/api/chat', async (req, res) => {
         reply = result;
         console.log('✅ Result é string');
       } else {
+        console.log('❌ Não consegui extrair - estrutura:', Object.keys(result || {}));
         reply = 'Não consegui extrair resposta.';
-        console.log('❌ Não consegui extrair');
       }
 
       console.log('📤 Respondendo com:', reply);
