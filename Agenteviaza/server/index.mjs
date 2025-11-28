@@ -439,6 +439,33 @@ function extractAllData(text){
       console.log('  ✅ Só ida');
     }
   }
+  else {
+    const dmAll = Array.from(text.matchAll(/\b(\d{1,2})\/(\d{1,2})\b/g));
+    if (dmAll.length >= 1) {
+      const d1 = dmAll[0];
+      const day = String(d1[1]).padStart(2, '0');
+      const month = String(d1[2]).padStart(2, '0');
+      let year = new Date().getFullYear();
+      const today = new Date();
+      const currentMonth = today.getMonth() + 1;
+      if (parseInt(month, 10) < currentMonth) { year++; }
+      result.dpt = `${year}-${month}-${day}`;
+      console.log(`  ✅ Data ida: ${result.dpt}`);
+      if (dmAll.length >= 2) {
+        const d2 = dmAll[1];
+        const retDay = String(d2[1]).padStart(2, '0');
+        const retMonth = String(d2[2]).padStart(2, '0');
+        let retYear = year;
+        if (parseInt(retMonth, 10) < parseInt(month, 10)) { retYear++; }
+        result.dst = `${retYear}-${retMonth}-${retDay}`;
+        result.ow = false;
+        console.log(`  ✅ Data volta: ${result.dst}`);
+      } else {
+        result.ow = true;
+        console.log('  ✅ Só ida');
+      }
+    }
+  }
   const adtMatch = text.match(/(\d+)\s*(?:adulto|adult)/i);
   if (adtMatch) { result.adt = parseInt(adtMatch[1]); }
   const chdMatch = text.match(/(\d+)\s*(?:criança|criancas|crianças|child)/i);
