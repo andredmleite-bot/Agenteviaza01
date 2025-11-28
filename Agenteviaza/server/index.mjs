@@ -333,13 +333,7 @@ app.post('/api/chat', async (req, res) => {
         history.push({ role: 'assistant', content: reply });
         return res.json({ reply });
       } else {
-        const summary = formatStateMessage(merged);
-        const missing = [];
-        if (!merged.dep || !merged.des) missing.push('**origem e destino**');
-        if (!merged.dpt) missing.push('**data de ida**');
-        if (!merged.dst && !merged.ow) missing.push('**data de volta**');
-        if ((merged.adt||0)+(merged.chd||0)+(merged.bby||0)===0) missing.push('**número de passageiros**');
-        const reply = `${summary}\n\n📝 Ainda preciso de: ${missing.join(', ')}`;
+        const reply = await askAgentForNext(merged, message);
         history.push({ role: 'assistant', content: reply });
         return res.json({ reply });
       }
@@ -360,14 +354,7 @@ app.post('/api/chat', async (req, res) => {
     }
 
     if (hasNewData) {
-      console.log('📋 Mostrando estado e pedindo resto...');
-      const summary = formatStateMessage(state);
-      const missing = [];
-      if (!state.dep || !state.des) missing.push('**origem e destino**');
-      if (!state.dpt) missing.push('**data de ida**');
-      if (!state.dst && !state.ow) missing.push('**data de volta**');
-      if ((state.adt||0)+(state.chd||0)+(state.bby||0)===0) missing.push('**número de passageiros**');
-      const reply = `${summary}\n\n📝 Ainda preciso de: ${missing.join(', ')}`;
+      const reply = await askAgentForNext(state, message);
       history.push({ role: 'assistant', content: reply });
       return res.json({ reply });
     }
@@ -637,7 +624,7 @@ function extractIATAFromText(text){
   }
   if (codes.length === 1) {
     console.log('  📍 Um código, procurando alias...');
-    const textWithoutCode = cleaned.replace(new RegExp(`\\b${codes[0]}\\b`, 'i'), '');
+    const textWithoutCode = raw.replace(new RegExp(`\b${codes[0]}\b`, 'i'), '');
     for (const entry of IATA_LEXICON) {
       const match = anyAliasMatch(entry, normalizeText(textWithoutCode));
       if (match && entry.code !== codes[0]) {
@@ -702,4 +689,4 @@ function extractPassengersFromText(text){
   console.log(`  ✅ ${adt}A ${chd}C ${bby}B`);
   return { adt, chd, bby };
 }
-function summaryForState(state){ const dptBr=formatISOToBR(state.dpt); const hasDst=!!state.dst; const dstBr=hasDst?formatISOToBR(state.dst):null; const pax=[]; if(state.adt>0) pax.push(`${state.adt} adulto(s)`); if(state.chd>0) pax.push(`${state.chd} criança(s)`); if(state.bby>0) pax.push(`${state.bby} bebê(s)`); const paxStr=pax.join(', '); const dstPart=hasDst?` e volta ${dstBr}`:''; return `Resumo: origem ${state.dep}, destino ${state.des}, ida ${dptBr}${dstPart}.${paxStr?` Passageiros: ${paxStr}.`:''} Posso cotar?`; }
+function summaryForState(state){ const parts=[]; if(state.dep) parts.push(`origem ${state.dep}`); if(state.des) parts.push(`destino ${state.des}`); if(state.dpt) parts.push(`ida ${formatISOToBR(state.dpt)}`); if(state.dst) parts.push(`volta ${formatISOToBR(state.dst)}`); const pax=[]; if((state.adt||0)>0) pax.push(`${state.adt} adulto(s)`); if((state.chd||0)>0) pax.push(`${state.chd} criança(s)`); if((state.bby||0)>0) pax.push(`${state.bby} bebê(s)`); const paxStr=pax.join(', '); if(parts.length===0 && !paxStr) return 'Vamos começar: me diga origem e destino.'; return `Resumo: ${parts.join(', ')}.${paxStr?` Passageiros: ${paxStr}.`:''}`; }
