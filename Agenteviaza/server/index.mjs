@@ -507,7 +507,24 @@ function extractIATAFromText(text){
   return null;
 }
 function extractDatesFromText(text){ const raw=stripDiacritics(String(text||'').toLowerCase()); const candidates=[]; const isoMatches=raw.match(/\b\d{4}-\d{2}-\d{2}\b/g)||[]; candidates.push(...isoMatches); const dmMatches=raw.match(/\b\d{1,2}\/\d{1,2}(?:\/\d{4})?\b/g)||[]; candidates.push(...dmMatches); const monthKeys=Object.keys(MONTHS_PT).join('|'); const natMatches=Array.from(raw.matchAll(new RegExp(`(\\d{1,2})\\s*(?:de\\s*)?(${monthKeys})`,'g'))).map(m=>`${m[1]} ${m[2]}`); candidates.push(...natMatches); const parsed=[]; for(const c of candidates){ const iso=parseNaturalDate(c); if(iso) parsed.push(iso); if(parsed.length>=2) break; } const dpt=parsed[0]||null; const dst=parsed[1]||null; if(!dpt) return null; if(!withinWindow(dpt)) return null; if(dst){ if(!withinWindow(dst)) return null; if(new Date(dst)<new Date(dpt)) return null; } return { dpt, dst, ow: !dst }; }
-function extractPassengersFromText(text){ const s=stripDiacritics(String(text||'').toLowerCase()); const num=(v)=>parseNumberPt(v)??(isNaN(Number(v))?undefined:Number(v)); const mAdt=s.match(/(\d+|uma|um|duas|dois|tres|três|quatro|cinco|seis|sete|oito|nove)\s*adult/); const mChd=s.match(/(\d+|uma|um|duas|dois|tres|três|quatro|cinco|seis|sete|oito|nove)\s*crianc/); const mBby=s.match(/(\d+|uma|um|duas|dois|tres|três|quatro|cinco|seis|sete|oito|nove)\s*beb/); const adt=num(mAdt?.[1])??1; const chd=num(mChd?.[1])??0; const bby=num(mBby?.[1])??0; if(adt+chd+bby>9) return null; return { adt, chd, bby }; }
+function extractPassengersFromText(text){
+  if (!text) return null;
+  const s = stripDiacritics(String(text||'').toLowerCase());
+  console.log('  🔍 extractPassengersFromText:', { text: s });
+  const hasPassengerKeywords = /\b(adulto|adultos|criança|criancas|criança|bebe|bebes|pessoa|pessoas|passageiro|passageiros)\b/i.test(s);
+  if (!hasPassengerKeywords) { console.log('  ❌ Nenhuma palavra de passageiro encontrada'); return null; }
+  const num=(v)=>parseNumberPt(v)??(isNaN(Number(v))?undefined:Number(v));
+  const mAdt=s.match(/(\d+|uma|um|duas|dois|tres|três|quatro|cinco|seis|sete|oito|nove)\s*adulto/i);
+  const mChd=s.match(/(\d+|uma|um|duas|dois|tres|três|quatro|cinco|seis|sete|oito|nove)\s*crianc/i);
+  const mBby=s.match(/(\d+|uma|um|duas|dois|tres|três|quatro|cinco|seis|sete|oito|nove)\s*beb/i);
+  const adt=num(mAdt?.[1])??(mAdt?1:0);
+  const chd=num(mChd?.[1])??(mChd?1:0);
+  const bby=num(mBby?.[1])??(mBby?1:0);
+  console.log('  ✅ Passageiros extraídos:', { adt, chd, bby });
+  const total=adt+chd+bby;
+  if(total<1||total>9){ console.log('  ❌ Total inválido:', total); return null; }
+  return { adt, chd, bby };
+}
 function computeStateFromMessage(message){
   console.log('🔧 computeStateFromMessage chamada com:', message);
 
