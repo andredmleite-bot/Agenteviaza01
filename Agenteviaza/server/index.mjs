@@ -393,13 +393,17 @@ function extractAllData(text){
   if (!text) return {};
   console.log(`\n🔍 extractAllData: "${text}"`);
   const result = {};
-  const iataMatch = text.match(/([a-záàâãéèêíïóôõöúçñ]+)\s+(?:para|pra)\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s+dia|\s+com|$|,)/i);
+  const iataMatch = text.match(/([a-záàâãéèêíïóôõöúçñ\s]+?)\s+(?:para|pra)\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s+dia|\s+com|$|,)/i);
   if (iataMatch) {
-    const depCity = iataMatch[1].trim();
-    const desCity = iataMatch[2].trim();
+    let depCity = iataMatch[1].trim();
+    let desCity = iataMatch[2].trim();
+    depCity = depCity.replace(/^de\s+/i, '').replace(/\s+(dia|ida|volta|com|sem).*$/i, '').trim();
+    desCity = desCity.replace/^de\s+/i, '').replace(/\s+(dia|ida|volta|com|sem).*$/i, '').trim();
     console.log(`  📍 Padrão encontrado: "${depCity}" → "${desCity}"`);
-    const dep = resolveIATA(depCity);
-    const des = resolveIATA(desCity);
+    let dep = resolveIATA(depCity);
+    let des = resolveIATA(desCity);
+    if (!dep) { const normLeft = normalizeText(depCity); for (const entry of IATA_LEXICON) { const m = anyAliasMatch(entry, normLeft); if (m) { dep = entry.code; break; } } }
+    if (!des) { const normRight = normalizeText(desCity); for (const entry of IATA_LEXICON) { const m = anyAliasMatch(entry, normRight); if (m) { des = entry.code; break; } } }
     console.log(`  🔍 Resolvido: ${dep} → ${des}`);
     if (dep && des) {
       result.dep = dep;
