@@ -371,7 +371,51 @@ app.post('/evo/send-text', async (req,res)=>{ try{ const number=req.body?.number
 
 app.listen(Number(PORT), ()=>{ console.log(`Servidor iniciado em http://localhost:${PORT}`); });
 // Extração de dados a partir da mensagem para resumo/confirmacao
-function extractIATAFromText(text){ const raw=String(text||'').trim(); const norm=normalizeText(raw); function isForbiddenToken(tok){ const t=normalizeText(tok); return IATA_STOPLIST.has(t); } let m=norm.match(/\bsaindo\s+de\s+(.+?)\s+(?:pra|para)\s+(.+)/i); if(!m) m=norm.match(/\bde\s+(.+?)\s+(?:pra|para|\u2192|\-\>|\-)\s+(.+)/i); if(m){ const left=m[1].trim(); const right=m[2].trim(); if(!isForbiddenToken(left)&&!isForbiddenToken(right)){ const dep=resolveIATA(left); const des=resolveIATA(right); if(dep&&des&&OFFICIAL_IATA.has(dep)&&OFFICIAL_IATA.has(des)) return { dep, des }; } } const codes=Array.from(raw.matchAll(/\b([A-Za-z]{3})\b/g)).map(x=>x[1].toUpperCase()).filter(c=>OFFICIAL_IATA.has(c)&&!IATA_STOPLIST.has(normalizeText(c))); if(codes.length>=2) return { dep: codes[0], des: codes[1] }; const found=[]; for(const entry of IATA_LEXICON){ const match=anyAliasMatch(entry,norm); if(match&&OFFICIAL_IATA.has(entry.code)){ found.push(entry.code); if(found.length>=2) break; } } if(found.length>=2) return { dep: found[0], des: found[1] }; if(found.length===1) return { dep: found[0], des: null }; return null; }
+function extractIATAFromText(text){
+  const raw=String(text||'').trim();
+  const norm=normalizeText(raw);
+
+  console.log('  🔍 extractIATAFromText:', { raw, norm });
+
+  function isForbiddenToken(tok){
+    const t=normalizeText(tok);
+    return IATA_STOPLIST.has(t);
+  }
+
+  let m=norm.match(/(\w+)\s+(?:para|pra)\s+(\w+)/i);
+  if(m){
+    const left=m[1].trim();
+    const right=m[2].trim();
+    console.log('  📍 Encontrou padrão:', { left, right });
+    if(!isForbiddenToken(left)&&!isForbiddenToken(right)){
+      const dep=resolveIATA(left);
+      const des=resolveIATA(right);
+      console.log('  ✅ Resolveu IATA:', { dep, des });
+      if(dep&&des&&OFFICIAL_IATA.has(dep)&&OFFICIAL_IATA.has(des)) return { dep, des };
+    }
+  }
+
+  const codes=Array.from(raw.matchAll(/\b([A-Za-z]{3})\b/g)).map(x=>x[1].toUpperCase()).filter(c=>OFFICIAL_IATA.has(c)&&!IATA_STOPLIST.has(normalizeText(c)));
+
+  console.log('  📍 Códigos encontrados:', codes);
+
+  if(codes.length>=2) return { dep: codes[0], des: codes[1] };
+
+  const found=[];
+  for(const entry of IATA_LEXICON){
+    const match=anyAliasMatch(entry,norm);
+    if(match&&OFFICIAL_IATA.has(entry.code)){
+      found.push(entry.code);
+      console.log('  📍 Encontrou alias:', entry.code);
+      if(found.length>=2) break;
+    }
+  }
+
+  if(found.length>=2) return { dep: found[0], des: found[1] };
+
+  console.log('  ❌ Não encontrou IATA');
+  return null;
+}
 function extractDatesFromText(text){ const raw=stripDiacritics(String(text||'').toLowerCase()); const candidates=[]; const isoMatches=raw.match(/\b\d{4}-\d{2}-\d{2}\b/g)||[]; candidates.push(...isoMatches); const dmMatches=raw.match(/\b\d{1,2}\/\d{1,2}(?:\/\d{4})?\b/g)||[]; candidates.push(...dmMatches); const monthKeys=Object.keys(MONTHS_PT).join('|'); const natMatches=Array.from(raw.matchAll(new RegExp(`(\\d{1,2})\\s*(?:de\\s*)?(${monthKeys})`,'g'))).map(m=>`${m[1]} ${m[2]}`); candidates.push(...natMatches); const parsed=[]; for(const c of candidates){ const iso=parseNaturalDate(c); if(iso) parsed.push(iso); if(parsed.length>=2) break; } const dpt=parsed[0]||null; const dst=parsed[1]||null; if(!dpt) return null; if(!withinWindow(dpt)) return null; if(dst){ if(!withinWindow(dst)) return null; if(new Date(dst)<new Date(dpt)) return null; } return { dpt, dst, ow: !dst }; }
 function extractPassengersFromText(text){ const s=stripDiacritics(String(text||'').toLowerCase()); const num=(v)=>parseNumberPt(v)??(isNaN(Number(v))?undefined:Number(v)); const mAdt=s.match(/(\d+|uma|um|duas|dois|tres|três|quatro|cinco|seis|sete|oito|nove)\s*adult/); const mChd=s.match(/(\d+|uma|um|duas|dois|tres|três|quatro|cinco|seis|sete|oito|nove)\s*crianc/); const mBby=s.match(/(\d+|uma|um|duas|dois|tres|três|quatro|cinco|seis|sete|oito|nove)\s*beb/); const adt=num(mAdt?.[1])??1; const chd=num(mChd?.[1])??0; const bby=num(mBby?.[1])??0; if(adt+chd+bby>9) return null; return { adt, chd, bby }; }
 function computeStateFromMessage(message){
