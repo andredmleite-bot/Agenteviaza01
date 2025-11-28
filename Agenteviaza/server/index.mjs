@@ -402,7 +402,7 @@ app.post('/webhook/evo', async (req,res)=>{
         }
       }
       console.log('🔍 Extraindo dados...');
-      const extracted = extractAnyData(text);
+      const extracted = extractAllData(text);
       if (extracted.dep && extracted.des) {
         if (state.dep && state.des && (state.dep !== extracted.dep || state.des !== extracted.des)) {
           console.log('🔄 Novo pedido! Limpando...');
