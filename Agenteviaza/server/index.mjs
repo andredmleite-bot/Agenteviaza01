@@ -375,52 +375,68 @@ app.post('/evo/send-text', async (req,res)=>{ try{ const number=req.body?.number
 app.listen(Number(PORT), ()=>{ console.log(`Servidor iniciado em http://localhost:${PORT}`); });
 // Extração de dados a partir da mensagem para resumo/confirmacao
 function extractIATAFromText(text){
-  const raw=String(text||'').trim();
-  const norm=normalizeText(raw);
+  const raw = String(text || '').trim();
+  const norm = normalizeText(raw);
 
   console.log('  🔍 extractIATAFromText:', { raw, norm });
 
   function isForbiddenToken(tok){
-    const t=normalizeText(tok);
+    const t = normalizeText(tok);
     return IATA_STOPLIST.has(t);
   }
 
-  let m=norm.match(/(\w+)\s+(?:para|pra)\s+(\w+)/i);
-  if(m){
-    const left=m[1].trim();
-    const right=m[2].trim();
-    console.log('  📍 Encontrou padrão:', { left, right });
-    if(!isForbiddenToken(left)&&!isForbiddenToken(right)){
-      const dep=resolveIATA(left);
-      const des=resolveIATA(right);
+  let m = norm.match(/([a-záàâãéèêíïóôõöúçñ\s]+?)\s+(?:para|pra)\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s|,|$)/i);
+
+  if (m) {
+    const left = m[1].trim();
+    const right = m[2].trim();
+    console.log('  📍 Encontrou padrão: ', { left, right });
+
+    if (!isForbiddenToken(left) && !isForbiddenToken(right)) {
+      const dep = resolveIATA(left);
+      const des = resolveIATA(right);
       console.log('  ✅ Resolveu IATA:', { dep, des });
-      if(dep&&des&&OFFICIAL_IATA.has(dep)&&OFFICIAL_IATA.has(des)){
+
+      if (dep && des) {
         console.log('  🎯 RETORNANDO:', { dep, des });
         return { dep, des };
       }
     }
   }
 
-  const codes=Array.from(raw.matchAll(/\b([A-Za-z]{3})\b/g)).map(x=>x[1].toUpperCase()).filter(c=>OFFICIAL_IATA.has(c)&&!IATA_STOPLIST.has(normalizeText(c)));
+  const codes = Array.from(raw.matchAll(/\b([A-Za-z]{3})\b/g))
+    .map(x => x[1].toUpperCase())
+    .filter(c => !IATA_STOPLIST.has(normalizeText(c)));
 
   console.log('  📍 Códigos encontrados:', codes);
 
-  if(codes.length>=2){
+  if (codes.length >= 2) {
     console.log('  🎯 RETORNANDO códigos:', codes);
     return { dep: codes[0], des: codes[1] };
   }
 
-  const found=[];
-  for(const entry of IATA_LEXICON){
-    const match=anyAliasMatch(entry,norm);
-    if(match&&OFFICIAL_IATA.has(entry.code)){
-      found.push(entry.code);
-      console.log('  📍 Encontrou alias:', entry.code);
-      if(found.length>=2) break;
+  if (codes.length === 1) {
+    console.log('  📍 Só um código, procurando outro...');
+    for (const entry of IATA_LEXICON) {
+      const match = anyAliasMatch(entry, norm);
+      if (match && entry.code !== codes[0]) {
+        console.log('  🎯 RETORNANDO misto:', [codes[0], entry.code]);
+        return { dep: codes[0], des: entry.code };
+      }
     }
   }
 
-  if(found.length>=2){
+  const found = [];
+  for (const entry of IATA_LEXICON) {
+    const match = anyAliasMatch(entry, norm);
+    if (match) {
+      found.push(entry.code);
+      console.log('  📍 Encontrou alias:', entry.code);
+      if (found.length >= 2) break;
+    }
+  }
+
+  if (found.length >= 2) {
     console.log('  🎯 RETORNANDO aliases:', found);
     return { dep: found[0], des: found[1] };
   }
