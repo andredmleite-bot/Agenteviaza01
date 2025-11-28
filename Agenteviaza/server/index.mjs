@@ -190,6 +190,23 @@ function isConfirmation(text){ const s=normalizeText(String(text||'')); return /
 app.get('/', (req,res)=>{ res.json({ name:'Viaza Agent API', message:'Use POST /api/chat para interagir com o agente.', health:'/api/health', chat:'/api/chat' }); });
 app.get('/api/health',(req,res)=>{ res.json({ ok:true }); });
 
+app.get('/api/test-agent', async (req, res) => {
+  try {
+    console.log('🧪 Testando agent...');
+    console.log('Agent:', agent);
+    console.log('Agent.name:', agent?.name);
+    console.log('Agent.tools:', agent?.tools?.length);
+    console.log('🚀 Chamando run()...');
+    const result = await run(agent, 'Oi');
+    console.log('✅ Sucesso! Result:', result);
+    return res.json({ success: true, result });
+  } catch (err) {
+    console.error('❌ Erro:', err.message);
+    console.error('Stack:', err.stack);
+    return res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+
 async function processChatMessage(sessionId, message){
   if (!sessionId || typeof message !== 'string' || !message.trim()) {
     return { status: 400, error: 'Parâmetros inválidos: sessionId e message são obrigatórios.' };
