@@ -251,50 +251,59 @@ async function processChatMessage(sessionId, message){
 
 app.post('/api/chat', async (req, res) => {
   const { sessionId, message } = req.body || {};
-  if (!sessionId || !message) return res.status(400).send('Parâmetros obrigatórios');
+  if (!sessionId || !message) {
+    return res.status(400).send('Parâmetros obrigatórios');
+  }
   try {
-    if (!sessions.has(sessionId)) sessions.set(sessionId, []);
+    if (!sessions.has(sessionId)) {
+      sessions.set(sessionId, []);
+    }
     const history = sessions.get(sessionId);
-    history.push({ role: 'user', content: String(message) });
+    history.push({ role: 'user', content: message });
 
-    if (isConfirmation(message) && pendingQuotes.has(sessionId)) {
-      try {
-        const url = await buildQuoteLinkStandalone(pendingQuotes.get(sessionId));
-        pendingQuotes.delete(sessionId);
-        const reply = `Pronto! Aqui está sua cotação:\n${url}`;
-        history.push({ role: 'assistant', content: reply });
-        return res.json({ reply });
-      } catch (err) {
-        pendingQuotes.delete(sessionId);
-        const reply = 'Erro ao gerar link após confirmação. Vamos ajustar dados e tentar novamente?';
-        history.push({ role: 'assistant', content: reply });
-        return res.json({ reply });
-      }
+    if (!OPENAI_API_KEY) {
+      return res.status(500).json({ reply: 'Backend sem OPENAI_API_KEY configurada.' });
     }
 
-    const inferred = computeStateFromMessage(message);
-    if (inferred) {
-      pendingQuotes.set(sessionId, inferred);
-      const reply = summaryForState(inferred);
-      history.push({ role: 'assistant', content: reply });
-      return res.json({ reply });
-    }
-
-    if (!OPENAI_API_KEY) return res.status(500).json({ reply: 'Backend sem OPENAI_API_KEY configurada.' });
     try {
-      const raw = await run(agent, message);
-      let reply = raw?.lastModelResponse?.output?.[0]?.content?.[0]?.text
-        ?? raw?.state?.lastModelResponse?.output?.[0]?.content?.[0]?.text
-        ?? raw?.output_text
-        ?? raw?.finalOutput
-        ?? 'Não consegui gerar resposta.';
-      reply = replaceISODatesWithBR(adjustYearsInViazaLink(reply));
+      console.log('🚀 Chamando run() com:', message);
+      const result = await run(agent, message);
+      console.log('📊 Tipo de result:', typeof result);
+      console.log('📊 Keys de result:', Object.keys(result || {}));
+      console.log('📊 Result completo:', JSON.stringify(result, null, 2));
+
+      let reply = null;
+      if (result?.lastModelResponse?.output?.[0]?.content?.[0]?.text) {
+        reply = result.lastModelResponse.output[0].content[0].text;
+        console.log('✅ Extraído de: lastModelResponse');
+      } else if (result?.state?.lastModelResponse?.output?.[0]?.content?.[0]?.text) {
+        reply = result.state.lastModelResponse.output[0].content[0].text;
+        console.log('✅ Extraído de: state.lastModelResponse');
+      } else if (result?.output_text) {
+        reply = result.output_text;
+        console.log('✅ Extraído de: output_text');
+      } else if (result?.finalOutput) {
+        reply = result.finalOutput;
+        console.log('✅ Extraído de: finalOutput');
+      } else if (typeof result === 'string') {
+        reply = result;
+        console.log('✅ Result é string');
+      } else {
+        reply = 'Não consegui extrair resposta.';
+        console.log('❌ Não consegui extrair');
+      }
+
+      console.log('📤 Respondendo com:', reply);
       history.push({ role: 'assistant', content: reply });
       return res.json({ reply });
     } catch (err) {
+      console.error('❌ ERRO NO AGENT:');
+      console.error('  Mensagem:', err.message);
+      console.error('  Stack:', err.stack);
       return res.status(500).json({ reply: 'Instabilidade no agente. Tente novamente.' });
     }
   } catch (err) {
+    console.error('❌ Erro geral:', err);
     return res.status(500).json({ reply: 'Erro interno.' });
   }
 });
