@@ -22,6 +22,9 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 
 
 const sessions = new Map();
 const sessionState = new Map();
+const locks = new Map();
+async function acquireLock(sid){ while (locks.get(sid)) { await new Promise(r=>setTimeout(r, 10)); } locks.set(sid, true); }
+function releaseLock(sid){ locks.delete(sid); }
 const unrecognizedIATA = new Set();
 const OFFICIAL_IATA = new Set([
   'BSB','CGH','GIG','SSA','FLN','POA','VCP','REC','CWB','BEL','VIX','SDU','CGB','CGR','FOR','MCP','MGF','GYN','NVT','MAO','NAT','BPS','MCZ','PMW','SLZ','GRU','LDB','PVH','RBR','JOI','UDI','CXJ','IGU','THE','AJU','JPA','PNZ','CNF','BVB','CPV','STM','IOS','JDO','IMP','XAP','MAB','CZS','PPB','CFB','FEN','JTC','MOC','SAO','RIO',
@@ -42,8 +45,8 @@ function parseNumberPt(str){ if(str==null) return undefined; const s=String(str)
 const IATA_LEXICON = [
   { code: 'CNF', city: 'Belo Horizonte', aliases: ['cnf', 'belo horizonte', 'bh', 'confins'] },
   { code: 'GRU', city: 'São Paulo', aliases: ['gru', 'sao paulo', 'são paulo', 'sp'] },
-  { code: 'SDU', city: 'Rio de Janeiro', aliases: ['rio', 'santos dumont'] },
-  { code: 'GIG', city: 'Rio de Janeiro', aliases: ['galeão', 'tom jobim', 'galeo'] },
+  { code: 'SDU', city: 'Rio de Janeiro', aliases: ['santos dumont','sdu','santo dumont'] },
+  { code: 'GIG', city: 'Rio de Janeiro', aliases: ['galeao','galeão','tom jobim','antonio carlos jobim','galeo','gig'] },
   { code: 'BSB', city: 'Brasília', aliases: ['brasília', 'brasilia'] },
   { code: 'SSA', city: 'Salvador', aliases: ['ssa', 'salvador', 'bahia'] },
   { code: 'REC', city: 'Recife', aliases: ['recife'] },
@@ -56,7 +59,7 @@ const IATA_LEXICON = [
   { code: 'FOR', city: 'Fortaleza', aliases: ['fortaleza'] },
   { code: 'CWB', city: 'Curitiba', aliases: ['curitiba'] },
   { code: 'SAO', city: 'São Paulo', aliases: ['são paulo', 'sao paulo', 'sp'] },
-  { code: 'RIO', city: 'Rio de Janeiro', aliases: ['rio de janeiro', 'jjd'] },
+  { code: 'RIO', city: 'Rio de Janeiro', aliases: ['rio de janeiro','rio','rj'] },
   { code: 'CGH', city: 'São Paulo', aliases: ['congonhas', 'sp'] },
   { code: 'VIX', city: 'Vitória', aliases: ['vix', 'vitoria', 'vitória', 'es'] },
   { code: 'GYN', city: 'Goiânia', aliases: ['goiania'] },
@@ -176,6 +179,11 @@ let agent = createAgent();
 const pendingQuotes = new Map();
 function isConfirmation(text){ const s=normalizeText(String(text||'')); return /(ok|pode|pode prosseguir|pode cotar|sim|vamos|pross?eguir|manda|segue|confirmo|confirmar|confirmado|confirmada|confirmei|finalizar|fechar|pode enviar|pode emitir|gerar link|ativar link)/i.test(s); }
 
+function isGreeting(text){ const s=normalizeText(String(text||'').toLowerCase()); return /\b(oi|ola|olá|hey|bom dia|boa tarde|boa noite)\b/.test(s); }
+function missingFields(state){ const missing=[]; if(!state.dep||!state.des) missing.push('origem e destino'); if(!state.dpt) missing.push('data de ida'); if(state.ow===false&&!state.dst) missing.push('data de volta'); if(((state.adt||0)+(state.chd||0)+(state.bby||0))===0) missing.push('número de passageiros'); return missing; }
+async function askAgentForNext(state, message){ const miss=missingFields(state); const next=miss[0]; const summary=summaryForState(state); const prompt=`Você é um assistente de viagem. Estado atual: ${summary}. Mensagem do cliente: "${String(message)}". Peça de forma natural e curta somente por ${next}.`; try{ const result=await run(agent, prompt); if (result?.state?.modelResponses?.[0]?.output?.[0]?.content?.[0]?.text) return result.state.modelResponses[0].output[0].content[0].text; if (result?.finalOutput) return result.finalOutput; if (typeof result==='string') return result; }catch(_){ } return `Vamos lá. ${summary}\n\nPode me informar ${next}?`; }
+function formatStateMessage(s){ return summaryForState(s); }
+
 app.get('/', (req,res)=>{ res.json({ name:'Viaza Agent API', message:'Use POST /api/chat para interagir com o agente.', health:'/api/health', chat:'/api/chat' }); });
 app.get('/api/health',(req,res)=>{ res.json({ ok:true }); });
 
@@ -272,10 +280,7 @@ app.post('/api/chat', async (req, res) => {
       console.log('💾 Estado mesclado:', merged);
       return merged;
     }
-function formatStateMessage(s){ return summaryForState(s); }
-function isGreeting(text){ const s=normalizeText(String(text||'').toLowerCase()); return /\b(oi|ola|olá|hey|bom dia|boa tarde|boa noite)\b/.test(s); }
-function missingFields(state){ const missing=[]; if(!state.dep||!state.des) missing.push('origem e destino'); if(!state.dpt) missing.push('data de ida'); if(state.ow===false&&!state.dst) missing.push('data de volta'); if(((state.adt||0)+(state.chd||0)+(state.bby||0))===0) missing.push('número de passageiros'); return missing; }
-async function askAgentForNext(state, message){ const miss=missingFields(state); const next=miss[0]; const summary=formatStateMessage(state); const prompt=`Você é um assistente de viagem. Estado atual: ${summary}. Mensagem do cliente: "${String(message)}". Peça de forma natural e curta somente por ${next}.`; try{ const result=await run(agent, prompt); if (result?.state?.modelResponses?.[0]?.output?.[0]?.content?.[0]?.text) return result.state.modelResponses[0].output[0].content[0].text; if (result?.finalOutput) return result.finalOutput; if (typeof result==='string') return result; }catch(_){ } return `Vamos lá. ${summary}\n\nPode me informar ${next}?`; }
+
 
     let state = getSessionState(sessionId);
     console.log('📋 Estado atual:', state);
