@@ -398,7 +398,7 @@ function extractAllData(text){
     let depCity = iataMatch[1].trim();
     let desCity = iataMatch[2].trim();
     depCity = depCity.replace(/^de\s+/i, '').replace(/\s+(dia|ida|volta|com|sem).*$/i, '').trim();
-    desCity = desCity.replace/^de\s+/i, '').replace(/\s+(dia|ida|volta|com|sem).*$/i, '').trim();
+    desCity = desCity.replace(/^de\s+/i, '').replace(/\s+(dia|ida|volta|com|sem).*$/i, '').trim();
     console.log(`  📍 Padrão encontrado: "${depCity}" → "${desCity}"`);
     let dep = resolveIATA(depCity);
     let des = resolveIATA(desCity);
