@@ -272,7 +272,10 @@ app.post('/api/chat', async (req, res) => {
       console.log('💾 Estado mesclado:', merged);
       return merged;
     }
-    function formatStateMessage(s){ return summaryForState(s); }
+function formatStateMessage(s){ return summaryForState(s); }
+function isGreeting(text){ const s=normalizeText(String(text||'').toLowerCase()); return /\b(oi|ola|olá|hey|bom dia|boa tarde|boa noite)\b/.test(s); }
+function missingFields(state){ const missing=[]; if(!state.dep||!state.des) missing.push('origem e destino'); if(!state.dpt) missing.push('data de ida'); if(state.ow===false&&!state.dst) missing.push('data de volta'); if(((state.adt||0)+(state.chd||0)+(state.bby||0))===0) missing.push('número de passageiros'); return missing; }
+async function askAgentForNext(state, message){ const miss=missingFields(state); const next=miss[0]; const summary=formatStateMessage(state); const prompt=`Você é um assistente de viagem. Estado atual: ${summary}. Mensagem do cliente: "${String(message)}". Peça de forma natural e curta somente por ${next}.`; try{ const result=await run(agent, prompt); if (result?.state?.modelResponses?.[0]?.output?.[0]?.content?.[0]?.text) return result.state.modelResponses[0].output[0].content[0].text; if (result?.finalOutput) return result.finalOutput; if (typeof result==='string') return result; }catch(_){ } return `Vamos lá. ${summary}\n\nPode me informar ${next}?`; }
 
     let state = getSessionState(sessionId);
     console.log('📋 Estado atual:', state);
@@ -490,6 +493,7 @@ app.post('/webhook/evo', async (req,res)=>{
     const history = sessions.get(sid);
     history.push({ role: 'user', content: String(text) });
     if (!OPENAI_API_KEY) { await evoSendText(number, 'Erro: API key não configurada'); return res.json({ ok: true }); }
+    if (isGreeting(text)) { const reply='Olá! Para começar, de onde para onde deseja viajar?'; history.push({ role: 'assistant', content: reply }); await evoSendText(number, reply); return res.json({ ok: true }); }
     await acquireLock(sid);
     try {
       let state = getSessionState(sid);
@@ -546,20 +550,7 @@ app.post('/webhook/evo', async (req,res)=>{
         await evoSendText(number, reply);
         return res.json({ ok: true });
       }
-      console.log('📝 Mostrando o que falta...');
-      const summary = formatStateMessage(state);
-      const missing = [];
-      if (!state.dep || !state.des) missing.push('🌍 origem e destino');
-      if (!state.dpt) missing.push('📅 data de ida');
-      if (!state.ow && !state.dst) missing.push('📅 data de volta');
-      if ((state.adt||0)+(state.chd||0)+(state.bby||0)===0) missing.push('👥 número de passageiros');
-      if (missing.length === 0) {
-        const reply = `${summary}\n\n✅ Pronto! Confirma?`;
-        history.push({ role: 'assistant', content: reply });
-        await evoSendText(number, reply);
-        return res.json({ ok: true });
-      }
-      const reply = `${summary}\n\n📝 Ainda preciso de:\n${missing.map(m=>`• ${m}`).join('\n')}`;
+      const reply = await askAgentForNext(state, text);
       history.push({ role: 'assistant', content: reply });
       await evoSendText(number, reply);
       return res.json({ ok: true });
