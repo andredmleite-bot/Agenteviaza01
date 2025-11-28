@@ -217,14 +217,7 @@ async function processChatMessage(sessionId, message){
       return { reply, note: 'quote_error_after_confirmation' };
     }
   }
-  // Tentar computar estado diretamente da mensagem para confirmação
-  const inferred = computeStateFromMessage(message);
-  if (inferred) {
-    pendingQuotes.set(sessionId, inferred);
-    const reply = summaryForState(inferred);
-    history.push({ role: 'assistant', content: reply });
-    return { reply, note: 'summary_for_confirmation' };
-  }
+  // Removido computeStateFromMessage: seguir para agente quando não houver confirmação
   if (!OPENAI_API_KEY) return { status: 500, error: 'Backend sem OPENAI_API_KEY configurada.' };
   try {
     const prompt = `Cliente: ${String(message)}\nAssistente:`;
@@ -289,16 +282,16 @@ app.post('/api/chat', async (req, res) => {
     }
 
     console.log('🔍 Extraindo dados da mensagem...');
-    const inferred = computeStateFromMessage(message);
-    if (inferred) {
-      console.log('✅ Novos dados encontrados:', inferred);
-      if (Object.keys(state).length > 0 && (state.dep !== inferred.dep || state.des !== inferred.des)) {
+    const extracted = extractAllData(message);
+    if (Object.keys(extracted).length > 0) {
+      console.log('✅ Dados extraídos:', extracted);
+      if (Object.keys(state).length > 0 && extracted.dep && extracted.des && (state.dep !== extracted.dep || state.des !== extracted.des)) {
         console.log('🔄 Novo pedido detectado! Limpando memória anterior...');
         sessionState.delete(sessionId);
         state = {};
         console.log('🧹 Memória limpa para novo pedido!');
       }
-      const merged = mergeStateData(sessionId, { dep: inferred.dep, des: inferred.des, dpt: inferred.dpt, dst: inferred.dst, adt: inferred.adt, chd: inferred.chd, bby: inferred.bby, ec: inferred.ec, ow: inferred.ow });
+      const merged = mergeStateData(sessionId, extracted);
       if (isStateComplete(merged)) {
         const summary = formatStateMessage(merged);
         const reply = `${summary}\n\n✅ Dados completos! Confirma?`;
@@ -403,6 +396,7 @@ app.post('/webhook/evo', async (req,res)=>{
       }
       console.log('🔍 Extraindo dados...');
       const extracted = extractAllData(text);
+      console.log('📦 Extraído:', extracted);
       if (extracted.dep && extracted.des) {
         if (state.dep && state.des && (state.dep !== extracted.dep || state.des !== extracted.des)) {
           console.log('🔄 Novo pedido! Limpando...');
@@ -413,7 +407,7 @@ app.post('/webhook/evo', async (req,res)=>{
       if (Object.keys(extracted).length > 0) {
         console.log('💾 Mesclando dados...');
         state = mergeStateData(sid, extracted);
-        console.log('📋 Novo estado:', state);
+        console.log('📋 Estado mesclado:', state);
       }
       if (isStateComplete(state)) {
         const summary = formatStateMessage(state);
@@ -566,56 +560,5 @@ function extractPassengersFromText(text){
   if(total<1||total>9){ console.log(`  ❌ Total inválido: ${total}`); return null; }
   console.log(`  ✅ ${adt}A ${chd}C ${bby}B`);
   return { adt, chd, bby };
-}
-function computeStateFromMessage(message){
-  console.log('🔧 computeStateFromMessage chamada com:', message);
-
-  const places = extractIATAFromText(message);
-  console.log('  → places:', places);
-
-  const dates = extractDatesFromText(message);
-  console.log('  → dates:', dates);
-
-  const pax = extractPassengersFromText(message);
-  console.log('  → pax:', pax);
-
-  if(!places||!dates||!pax){
-    console.log('  ❌ Faltam dados!');
-    return null;
-  }
-
-  if(!places.dep||!places.des){
-    console.log('  ❌ Faltam IATA!');
-    return null;
-  }
-
-  const total=(pax.adt||0)+(pax.chd||0)+(pax.bby||0);
-  if(total<0||total>9){
-    console.log('  ❌ Total de passageiros inválido:', total);
-    return null;
-  }
-
-  const ow=!!dates.ow;
-  const dst=ow?null:(dates.dst||null);
-  if(!ow&&!dst){
-    console.log('  ❌ Sem data de volta!');
-    return null;
-  }
-
-  const dep=String(places.dep).toUpperCase();
-  const des=String(places.des).toUpperCase();
-  if(!OFFICIAL_IATA.has(dep)||!OFFICIAL_IATA.has(des)){
-    console.log('  ❌ IATA não oficial:', { dep, des });
-    return null;
-  }
-
-  if(dep===des){
-    console.log('  ❌ Origem = Destino');
-    return null;
-  }
-
-  const state = { dep, des, adt:pax.adt, chd:pax.chd, bby:pax.bby, dpt:dates.dpt, dst, ec:true, ow };
-  console.log('  ✅ State completo:', state);
-  return state;
 }
 function summaryForState(state){ const dptBr=formatISOToBR(state.dpt); const hasDst=!!state.dst; const dstBr=hasDst?formatISOToBR(state.dst):null; const pax=[]; if(state.adt>0) pax.push(`${state.adt} adulto(s)`); if(state.chd>0) pax.push(`${state.chd} criança(s)`); if(state.bby>0) pax.push(`${state.bby} bebê(s)`); const paxStr=pax.join(', '); const dstPart=hasDst?` e volta ${dstBr}`:''; return `Resumo: origem ${state.dep}, destino ${state.des}, ida ${dptBr}${dstPart}.${paxStr?` Passageiros: ${paxStr}.`:''} Posso cotar?`; }
