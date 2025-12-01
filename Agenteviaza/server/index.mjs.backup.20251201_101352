@@ -1,0 +1,696 @@
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import { Agent, run } from '@openai/agents';
+import { z } from 'zod';
+import { fileURLToPath } from 'url';
+import multer from 'multer';
+
+dotenv.config({ path: fileURLToPath(new URL('./.env', import.meta.url)) });
+
+const { OPENAI_API_KEY, PORT = 3002, OPENAI_MODEL, OPENAI_BASE_URL, OPENAI_TRANSCRIBE_MODEL, EVO_API_URL, EVO_API_KEY, EVO_INSTANCE, APP_BASE_URL } = process.env;
+const TRANSCRIBE_MODEL = OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
+
+if (!OPENAI_API_KEY) {
+  console.warn('Aviso: OPENAI_API_KEY não está definido. Configure em .env ou variável de ambiente.');
+}
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+
+const sessions = new Map();
+const sessionState = new Map();
+const locks = new Map();
+async function acquireLock(sid){ while (locks.get(sid)) { await new Promise(r=>setTimeout(r, 10)); } locks.set(sid, true); }
+function releaseLock(sid){ locks.delete(sid); }
+const unrecognizedIATA = new Set();
+const OFFICIAL_IATA = new Set([
+  'BSB','CGH','GIG','SSA','FLN','POA','VCP','REC','CWB','BEL','VIX','SDU','CGB','CGR','FOR','MCP','MGF','GYN','NVT','MAO','NAT','BPS','MCZ','PMW','SLZ','GRU','LDB','PVH','RBR','JOI','UDI','CXJ','IGU','THE','AJU','JPA','PNZ','CNF','BVB','CPV','STM','IOS','JDO','IMP','XAP','MAB','CZS','PPB','CFB','FEN','JTC','MOC','SAO','RIO',
+  'JFK','LGA','EWR','MIA','MCO','LAX','SFO','YYZ','YVR','YUL','EZE','AEP','SCL','MVD','MEX','CUN','LIM','BOG','PTY',
+  'LHR','LGW','CDG','ORY','AMS','FRA','MUC','BER','MAD','BCN','LIS','OPO','FCO','MXP','VCE','ZRH','GVA',
+  'DXB','AUH','DOH','IST','SAW','NRT','HND','SIN','BKK','DMK','DPS','SYD','MEL','CMN','RAK','JNB','CPT'
+]);
+const IATA_STOPLIST = new Set([
+  'dia','hoje','amanha','amanhã','ida','volta','mes','mês','proximo','próximo','de','para','pra','em','ate','até','partindo','retorno','so','somente','só','apenas','com','sem',
+  'ola','olá','oi','hey'
+]);
+
+const MONTHS_PT = { janeiro:0, jan:0, fevereiro:1, fev:1, março:2, marco:2, mar:2, abril:3, abr:3, maio:4, junho:5, jun:5, julho:6, jul:6, agosto:7, ago:7, setembro:8, set:8, outubro:9, out:9, novembro:10, nov:10, dezembro:11, dez:11 };
+function stripDiacritics(s){ return s.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); }
+function normalizeText(s){ if(!s) return ''; const noAccents=stripDiacritics(String(s)); return noAccents.toLowerCase().replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim(); }
+function levenshtein(a,b){ a=a||''; b=b||''; const m=a.length,n=b.length; if(m===0) return n; if(n===0) return m; const dp=Array.from({length:m+1},()=>new Array(n+1).fill(0)); for(let i=0;i<=m;i++) dp[i][0]=i; for(let j=0;j<=n;j++) dp[0][j]=j; for(let i=1;i<=m;i++){ for(let j=1;j<=n;j++){ const cost=a[i-1]===b[j-1]?0:1; dp[i][j]=Math.min(dp[i-1][j]+1, dp[i][j-1]+1, dp[i-1][j-1]+cost); } } return dp[m][n]; }
+function thresholdFor(len){ if(len<=3) return 1; if(len<=6) return 2; return 3; }
+function parseNumberPt(str){ if(str==null) return undefined; const s=String(str).trim().toLowerCase(); if(/^\d+$/.test(s)) return parseInt(s,10); const map={ zero:0, um:1, uma:1, hum:1, dois:2, duas:2, tres:3, 'três':3, quatro:4, cinco:5, seis:6, sete:7, oito:8, nove:9 }; const key=stripDiacritics(s); return map[key]; }
+const IATA_LEXICON = [
+  { code: 'CNF', city: 'Belo Horizonte', aliases: ['cnf', 'belo horizonte', 'bh', 'confins'] },
+  { code: 'GRU', city: 'São Paulo', aliases: ['gru', 'sao paulo', 'são paulo', 'sp'] },
+  { code: 'SDU', city: 'Rio de Janeiro', aliases: ['santos dumont','sdu','santo dumont'] },
+  { code: 'GIG', city: 'Rio de Janeiro', aliases: ['galeao','galeão','tom jobim','antonio carlos jobim','galeo','gig'] },
+  { code: 'BSB', city: 'Brasília', aliases: ['brasília', 'brasilia'] },
+  { code: 'SSA', city: 'Salvador', aliases: ['ssa', 'salvador', 'bahia'] },
+  { code: 'REC', city: 'Recife', aliases: ['recife'] },
+  { code: 'FLN', city: 'Florianópolis', aliases: ['florianópolis', 'florianopolis'] },
+  { code: 'POA', city: 'Porto Alegre', aliases: ['poa', 'porto alegre', 'porto-alegre', 'pa'] },
+  { code: 'VCP', city: 'Campinas', aliases: ['campinas', 'viracopos'] },
+  { code: 'BEL', city: 'Belém', aliases: ['bel', 'belem', 'belém', 'pa'] },
+  { code: 'MAO', city: 'Manaus', aliases: ['manaus'] },
+  { code: 'NAT', city: 'Natal', aliases: ['nat', 'natal', 'rn'] },
+  { code: 'FOR', city: 'Fortaleza', aliases: ['fortaleza'] },
+  { code: 'CWB', city: 'Curitiba', aliases: ['curitiba'] },
+  { code: 'SAO', city: 'São Paulo', aliases: ['são paulo', 'sao paulo', 'sp'] },
+  { code: 'RIO', city: 'Rio de Janeiro', aliases: ['rio de janeiro','rio','rj'] },
+  { code: 'CGH', city: 'São Paulo', aliases: ['congonhas', 'sp'] },
+  { code: 'VIX', city: 'Vitória', aliases: ['vix', 'vitoria', 'vitória', 'es'] },
+  { code: 'GYN', city: 'Goiânia', aliases: ['goiania'] },
+  { code: 'CGB', city: 'Cuiabá', aliases: ['cuiaba'] },
+  { code: 'CGR', city: 'Campo Grande', aliases: ['campo grande'] },
+  { code: 'MCZ', city: 'Maceió', aliases: ['maceio'] },
+  { code: 'JPA', city: 'João Pessoa', aliases: ['joao pessoa'] },
+  { code: 'AJU', city: 'Aracaju', aliases: ['aracaju'] },
+  { code: 'THE', city: 'Teresina', aliases: ['teresina'] },
+  { code: 'SLZ', city: 'São Luís', aliases: ['sao luis', 'são luís'] },
+  { code: 'IOS', city: 'Ilhéus', aliases: ['ilheus'] },
+  { code: 'JDO', city: 'Juazeiro do Norte', aliases: ['juazeiro do norte'] },
+  { code: 'IMP', city: 'Imperatriz', aliases: ['imperatriz'] },
+  { code: 'STM', city: 'Santarém', aliases: ['santarem'] },
+  { code: 'MAB', city: 'Marabá', aliases: ['maraba'] },
+  { code: 'XAP', city: 'Chapecó', aliases: ['chapeco'] },
+  { code: 'JOI', city: 'Joinville', aliases: ['joinville'] },
+  { code: 'LDB', city: 'Londrina', aliases: ['londrina'] },
+  { code: 'UDI', city: 'Uberlândia', aliases: ['uberlandia'] },
+  { code: 'CXJ', city: 'Caxias do Sul', aliases: ['caxias do sul'] },
+  { code: 'IGU', city: 'Foz do Iguaçu', aliases: ['foz do iguacu', 'iguacu'] },
+  { code: 'BVB', city: 'Boa Vista', aliases: ['boa vista'] },
+  { code: 'CPV', city: 'Campina Grande', aliases: ['campina grande'] },
+  { code: 'PNZ', city: 'Petrolina', aliases: ['petrolina'] },
+  { code: 'MCP', city: 'Macapá', aliases: ['macapa'] },
+  { code: 'MGF', city: 'Maringá', aliases: ['maringa'] },
+  { code: 'NVT', city: 'Navegantes', aliases: ['navegantes', 'balneario camboriu', 'bc'] },
+  { code: 'BPS', city: 'Porto Seguro', aliases: ['porto seguro'] },
+  { code: 'PMW', city: 'Palmas', aliases: ['palmas'] },
+  { code: 'RBR', city: 'Rio Branco', aliases: ['rio branco'] },
+  { code: 'PVH', city: 'Porto Velho', aliases: ['porto velho'] },
+  { code: 'MOC', city: 'Montes Claros', aliases: ['montes claros'] }
+];
+const IATA_INTL = [
+  { code: 'JFK', city: 'Nova York', aliases: ['new york','nyc','nova york','jfk'] },
+  { code: 'LGA', city: 'Nova York', aliases: ['laguardia','nova york','nyc'] },
+  { code: 'EWR', city: 'Nova York', aliases: ['newark','nova york','nyc'] },
+  { code: 'MIA', city: 'Miami', aliases: ['miami'] },
+  { code: 'MCO', city: 'Orlando', aliases: ['orlando','disney'] },
+  { code: 'LAX', city: 'Los Angeles', aliases: ['los angeles','la'] },
+  { code: 'SFO', city: 'São Francisco', aliases: ['san francisco','sao francisco'] },
+  { code: 'YYZ', city: 'Toronto', aliases: ['toronto'] },
+  { code: 'YVR', city: 'Vancouver', aliases: ['vancouver'] },
+  { code: 'YUL', city: 'Montreal', aliases: ['montreal'] },
+  { code: 'LHR', city: 'Londres', aliases: ['london','londres','heathrow'] },
+  { code: 'LGW', city: 'Londres', aliases: ['gatwick','londres'] },
+  { code: 'CDG', city: 'Paris', aliases: ['paris','charles de gaulle'] },
+  { code: 'ORY', city: 'Paris', aliases: ['paris orly','orly','paris'] },
+  { code: 'AMS', city: 'Amsterdã', aliases: ['amsterda','amsterdam'] },
+  { code: 'FRA', city: 'Frankfurt', aliases: ['frankfurt'] },
+  { code: 'MUC', city: 'Munique', aliases: ['munich','munique'] },
+  { code: 'BER', city: 'Berlim', aliases: ['berlin','berlim'] },
+  { code: 'MAD', city: 'Madri', aliases: ['madrid','madri'] },
+  { code: 'BCN', city: 'Barcelona', aliases: ['barcelona'] },
+  { code: 'LIS', city: 'Lisboa', aliases: ['lisboa','lisbon'] },
+  { code: 'OPO', city: 'Porto', aliases: ['porto','opo'] },
+  { code: 'FCO', city: 'Roma', aliases: ['rome','roma','fiumicino'] },
+  { code: 'MXP', city: 'Milão', aliases: ['milan','milao','malpensa'] },
+  { code: 'VCE', city: 'Veneza', aliases: ['venice','veneza'] },
+  { code: 'ZRH', city: 'Zurique', aliases: ['zurich','zurique'] },
+  { code: 'GVA', city: 'Genebra', aliases: ['geneva','genebra'] },
+  { code: 'EZE', city: 'Buenos Aires', aliases: ['buenos aires','eziza','ezeiza'] },
+  { code: 'AEP', city: 'Buenos Aires', aliases: ['aeroparque','buenos aires'] },
+  { code: 'SCL', city: 'Santiago', aliases: ['santiago','chile'] },
+  { code: 'MVD', city: 'Montevidéu', aliases: ['montevideo','montevideu'] },
+  { code: 'MEX', city: 'Cidade do México', aliases: ['mexico city','cidade do mexico','cdmx'] },
+  { code: 'CUN', city: 'Cancún', aliases: ['cancun','cancún'] },
+  { code: 'LIM', city: 'Lima', aliases: ['lima'] },
+  { code: 'BOG', city: 'Bogotá', aliases: ['bogota','bogotá'] },
+  { code: 'PTY', city: 'Cidade do Panamá', aliases: ['panama','cidade do panama','tocumen'] },
+  { code: 'DXB', city: 'Dubai', aliases: ['dubai'] },
+  { code: 'AUH', city: 'Abu Dhabi', aliases: ['abu dhabi'] },
+  { code: 'DOH', city: 'Doha', aliases: ['doha'] },
+  { code: 'IST', city: 'Istambul', aliases: ['istanbul','istambul'] },
+  { code: 'SAW', city: 'Istambul', aliases: ['sabiha gokcen','sabiha gokçen','istanbul'] },
+  { code: 'NRT', city: 'Tóquio', aliases: ['narita','toquio','tokyo'] },
+  { code: 'HND', city: 'Tóquio', aliases: ['haneda','toquio','tokyo'] },
+  { code: 'SIN', city: 'Singapura', aliases: ['singapore','singapura'] },
+  { code: 'BKK', city: 'Bangkok', aliases: ['bangkok','suvarnabhumi'] },
+  { code: 'DMK', city: 'Bangkok', aliases: ['don mueang','bangkok'] },
+  { code: 'DPS', city: 'Bali', aliases: ['bali','denpasar'] },
+  { code: 'SYD', city: 'Sydney', aliases: ['sydney'] },
+  { code: 'MEL', city: 'Melbourne', aliases: ['melbourne'] },
+  { code: 'CMN', city: 'Casablanca', aliases: ['casablanca'] },
+  { code: 'RAK', city: 'Marrakech', aliases: ['marrakech','marraquexe'] },
+  { code: 'JNB', city: 'Johannesburgo', aliases: ['johannesburg','johanesburgo'] },
+  { code: 'CPT', city: 'Cidade do Cabo', aliases: ['cape town','cidade do cabo'] }
+];
+IATA_LEXICON.push(...IATA_INTL);
+function toISO(d){ const yyyy=d.getFullYear(); const mm=String(d.getMonth()+1).padStart(2,'0'); const dd=String(d.getDate()).padStart(2,'0'); return `${yyyy}-${mm}-${dd}`; }
+function adjustYearForMonthDayISO(iso, baseYear){ if(!iso||!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(iso)) return iso; const [, yyyyStr, mmStr, ddStr] = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/)||[]; const today=new Date(); const mm=Number(mmStr)-1; const dd=Number(ddStr); let year = baseYear ?? today.getFullYear(); const candidate=new Date(year, mm, dd); const midnightToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()); if(candidate<midnightToday){ year+=1; } return toISO(new Date(year, mm, dd)); }
+function replaceISODatesWithBR(text){ return String(text||'').replace(/\b(\d{4})-(\d{2})-(\d{2})\b/g, (_m, y, m, d)=>`${d}/${m}/${y}`); }
+function formatISOToBR(iso){ const m=String(iso||'').match(/^(\d{4})-(\d{2})-(\d{2})$/); if(!m) return iso; return `${m[3]}/${m[2]}/${m[1]}`; }
+function adjustYearsInViazaLink(text){ try{ const m=String(text).match(/https:\/\/www\.viaza\.com\.br\/busca\/passagens\/(ow|rt)\/([a-z]+)\/([a-z]+)\?p=([0-9\-]+)&dd=(\d{4}-\d{2}-\d{2})(?:&rd=(\d{4}-\d{2}-\d{2}))?/); if(!m) return text; const trip=m[1]; const depSlug=m[2]; const desSlug=m[3]; const p=m[4]; const dd=m[5]; const rd=m[6]||null; const today=new Date(); const baseYear=today.getFullYear(); const newDd=adjustYearForMonthDayISO(dd, baseYear); let newRd = rd ? adjustYearForMonthDayISO(rd, baseYear) : null; if(newRd){ const dDpt=new Date(newDd); let dDst=new Date(newRd); if(dDst<dDpt){ const mm=dDst.getMonth(); const ddn=dDst.getDate(); dDst=new Date(dDpt.getFullYear(), mm, ddn); if(dDst<dDpt) dDst=new Date(dDpt.getFullYear()+1, mm, ddn); newRd=toISO(dDst); } } const base='https://www.viaza.com.br/busca/passagens'; const params = trip==='ow' ? `p=${p}&dd=${newDd}` : `p=${p}&dd=${newDd}&rd=${newRd}`; const newUrl = `${base}/${trip}/${depSlug}/${desSlug}?${params}`; return String(text).replace(m[0], newUrl); } catch { return text; } }
+function withinWindow(iso, days=360){ if(!iso) return false; const now=new Date(); const today=new Date(now.getFullYear(), now.getMonth(), now.getDate()); const t=new Date(iso); const target=new Date(t.getFullYear(), t.getMonth(), t.getDate()); const diffDays=Math.floor((target-today)/(1000*60*60*24)); return diffDays>=0 && diffDays<=days; }
+function parseNaturalDate(input){ if(!input) return undefined; const s=stripDiacritics(String(input).trim().toLowerCase()); if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s; const dm=s.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?$/); if(dm){ const dd=parseInt(dm[1],10); const mm=parseInt(dm[2],10)-1; if(dm[3]){ const yyyy=parseInt(dm[3],10); const d=new Date(yyyy,mm,dd); return toISO(d); } else { const yyyy=new Date().getFullYear(); let d=new Date(yyyy,mm,dd); const today=new Date(); if(d<today) d=new Date(yyyy+1,mm,dd); return toISO(d); } } const mv=s.match(/^mes que vem dia\s*(\d{1,2})$/); if(mv){ const day=parseInt(mv[1],10); const today=new Date(); const nextMonth=new Date(today.getFullYear(), today.getMonth()+1, day); return toISO(nextMonth); } const fer=s.match(/(\d{1,2})\s*de\s*(setembro| setembro)/); if(fer){ const dd=parseInt(fer[1],10); const mm=8; const today=new Date(); let yyyy=today.getFullYear(); let d=new Date(yyyy,mm,dd); if(d<today) d=new Date(yyyy+1,mm,dd); return toISO(d); } const nat=s.replace(/(^|\s)(\d+)[ºo]?\s/g,'$1$2 ').replace(/de\s+/g,' ').trim(); const parts=nat.split(/\s+/); if(parts.length>=2){ const dd=parseInt(parts[0],10); const monthKey=parts[1]; const mm=MONTHS_PT[monthKey]; if(Number.isInteger(dd) && mm!=null){ const today=new Date(); let yyyy=today.getFullYear(); let d=new Date(yyyy,mm,dd); if(d<today) d=new Date(yyyy+1,mm,dd); return toISO(d); } } return undefined; }
+
+function anyAliasMatch(entry, needle){ const n=normalizeText(needle); const terms=[entry.city, ...(entry.aliases||[])].map(normalizeText); if(terms.some(t=>t===n)) return { code: entry.code, matchType: 'exact' }; const distances=terms.map(t=>levenshtein(n,t)); const best=Math.min(...distances); const thr=thresholdFor(n.length); if(best<=thr) return { code: entry.code, matchType: 'fuzzy' }; return null; }
+function resolveIATA(cityName){ if(!cityName) return undefined; const raw=String(cityName).trim(); const clean=normalizeText(raw.toLowerCase()); console.log(`  🔍 resolveIATA("${cityName}") → normalized: "${clean}"`); if(/^[a-z]{3}$/i.test(raw)) return raw.toUpperCase(); for(const entry of IATA_LEXICON){ if(normalizeText(entry.city.toLowerCase())===clean){ console.log(`  ✅ Match exato: ${entry.code}`); return entry.code; } if(entry.aliases&&Array.isArray(entry.aliases)){ for(const alias of entry.aliases){ if(normalizeText(String(alias).toLowerCase())===clean){ console.log(`  ✅ Match alias: ${entry.code}`); return entry.code; } } } } console.log('  ❌ Não encontrou em IATA_LEXICON'); return undefined; }
+function resolveIATAOptions(input){ if(!input) return []; const s=normalizeText(input); for(const entry of IATA_LEXICON){ const m=anyAliasMatch(entry,s); if(!m) continue; const opts=entry.options||[entry.code]; return Array.from(new Set(opts.map(o=>o.toUpperCase()))); } return []; }
+
+const StateSchema = z.object({ dep: z.string().length(3), des: z.string().length(3), adt: z.number().int().min(0), chd: z.number().int().min(0), bby: z.number().int().min(0), dpt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), dst: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(), ec: z.boolean(), ow: z.boolean() })
+ .refine(s => (s.adt + s.chd + s.bby) <= 9, { message: 'Máximo 9 passageiros por cotação' })
+ .refine(s => s.dep.toUpperCase() !== s.des.toUpperCase(), { message: 'Origem e destino não podem ser iguais' })
+ .refine(s => OFFICIAL_IATA.has(s.dep.toUpperCase()) && OFFICIAL_IATA.has(s.des.toUpperCase()), { message: 'IATA inválido fora da lista oficial' });
+
+function iataToViazaSlug(code){ const c=String(code||'').toUpperCase(); if(c==='CNF'||c==='PLU') return 'bhz'; if(c==='SAO') return 'sao'; if(c==='RIO') return 'rio'; return c.toLowerCase(); }
+async function buildQuoteLinkStandalone(stateArgs){ const s=StateSchema.parse(stateArgs); const dep=s.dep.toUpperCase(); const des=s.des.toUpperCase(); if(!OFFICIAL_IATA.has(dep)||!OFFICIAL_IATA.has(des)) throw new Error('IATA inválido fora da lista oficial'); if(dep===des) throw new Error('Origem e destino não podem ser iguais'); if(!withinWindow(s.dpt)) throw new Error('Data de ida fora da janela de 360 dias'); let dstVal=s.dst; if(s.ow){ dstVal=null; } else { if(!dstVal) throw new Error('Ida e volta requer dst válida'); if(!withinWindow(dstVal)) throw new Error('Data de volta fora da janela de 360 dias'); if(new Date(dstVal) < new Date(s.dpt)) throw new Error('Volta não pode ser antes da ida'); } const trip=s.ow?'ow':'rt'; const p=`${s.adt}-${s.chd}-${s.bby}`; const url=`https://www.viaza.com.br/busca/passagens/${trip}/${iataToViazaSlug(dep)}/${iataToViazaSlug(des)}?p=${p}&dd=${s.dpt}${dstVal?`&rd=${dstVal}`:''}`; return url; }
+
+function createAgent(){
+  const instructions = `Você é o assistente da Viaza (www.viaza.com.br). Entenda pedidos de viagem, colete origem/destino, datas (ida/volta) e passageiros (ADT/CHD/BBY ≤9). Valide IATA, datas futuras em até 360 dias, ida ≤ volta. Não usamos milhas do cliente; emitimos por milhas do nosso banco ou convencional, buscando a melhor tarifa. Quando confirmado, gere o link Viaza no padrão https://www.viaza.com.br/busca/passagens/{ow|rt}/{depSlug}/{desSlug}?p=ADT-CHD-BBY&dd=YYYY-MM-DD[&rd=YYYY-MM-DD], onde depSlug/desSlug são IATA em minúsculo com exceções CNF/PLU→bhz, SAO→sao, RIO→rio. Responda curto, claro e amigável.`;
+  const agent = new Agent({ name:'Viaza Assistant', instructions, ...(OPENAI_MODEL ? { model: OPENAI_MODEL } : {}), tools: [] });
+  return agent;
+}
+
+let agent = createAgent();
+const pendingQuotes = new Map();
+function isConfirmation(text){ const s=normalizeText(String(text||'')); return /(ok|pode|pode prosseguir|pode cotar|sim|vamos|pross?eguir|manda|segue|confirmo|confirmar|confirmado|confirmada|confirmei|finalizar|fechar|pode enviar|pode emitir|gerar link|ativar link)/i.test(s); }
+
+function isGreeting(text){ const s=normalizeText(String(text||'').toLowerCase()); return /\b(oi|ola|olá|hey|bom dia|boa tarde|boa noite)\b/.test(s); }
+function missingFields(state){ const missing=[]; if(!state.dep||!state.des) missing.push('origem e destino'); if(!state.dpt) missing.push('data de ida'); if(state.ow===false&&!state.dst) missing.push('data de volta'); if(((state.adt||0)+(state.chd||0)+(state.bby||0))===0) missing.push('número de passageiros'); return missing; }
+async function askAgentForNext(state, message){ const miss=missingFields(state); const next=miss[0]; const summary=summaryForState(state); const prompt=`Você é um assistente de viagem. Estado atual: ${summary}. Mensagem do cliente: "${String(message)}". Peça de forma natural e curta somente por ${next}.`; try{ const result=await run(agent, prompt); if (result?.state?.modelResponses?.[0]?.output?.[0]?.content?.[0]?.text) return result.state.modelResponses[0].output[0].content[0].text; if (result?.finalOutput) return result.finalOutput; if (typeof result==='string') return result; }catch(_){ } return `Vamos lá. ${summary}\n\nPode me informar ${next}?`; }
+function formatStateMessage(s){ return summaryForState(s); }
+
+app.get('/', (req,res)=>{ res.json({ name:'Viaza Agent API', message:'Use POST /api/chat para interagir com o agente.', health:'/api/health', chat:'/api/chat' }); });
+app.get('/api/health',(req,res)=>{ res.json({ ok:true }); });
+
+app.get('/api/test-agent', async (req, res) => {
+  try {
+    console.log('🧪 Testando agent...');
+    console.log('Agent:', agent);
+    console.log('Agent.name:', agent?.name);
+    console.log('Agent.tools:', agent?.tools?.length);
+    console.log('🚀 Chamando run()...');
+    const result = await run(agent, 'Oi');
+    console.log('✅ Sucesso! Result:', result);
+    return res.json({ success: true, result });
+  } catch (err) {
+    console.error('❌ Erro:', err.message);
+    console.error('Stack:', err.stack);
+    return res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+
+async function processChatMessage(sessionId, message){
+  if (!sessionId || typeof message !== 'string' || !message.trim()) {
+    return { status: 400, error: 'Parâmetros inválidos: sessionId e message são obrigatórios.' };
+  }
+  if (!sessions.has(sessionId)) sessions.set(sessionId, []);
+  const history = sessions.get(sessionId);
+  history.push({ role: 'user', content: String(message) });
+  if (isConfirmation(message) && pendingQuotes.has(sessionId)) {
+    try {
+      const url = await buildQuoteLinkStandalone(pendingQuotes.get(sessionId));
+      pendingQuotes.delete(sessionId);
+      const reply = `Pronto! Aqui está sua cotação:\n${url}`;
+      history.push({ role: 'assistant', content: reply });
+      return { reply, note: 'confirmed_quote' };
+    } catch (err) {
+      pendingQuotes.delete(sessionId);
+      const reply = 'Houve erro ao gerar o link após sua confirmação. Vamos ajustar dados (IATA, datas, passageiros) e tentar novamente?';
+      history.push({ role: 'assistant', content: reply });
+      return { reply, note: 'quote_error_after_confirmation' };
+    }
+  }
+  // Removido computeStateFromMessage: seguir para agente quando não houver confirmação
+  if (!OPENAI_API_KEY) return { status: 500, error: 'Backend sem OPENAI_API_KEY configurada.' };
+  try {
+    const prompt = `Cliente: ${String(message)}\nAssistente:`;
+    const result = await run(agent, prompt);
+    let reply = result?.finalOutput ?? 'Não consegui gerar resposta.';
+    reply = replaceISODatesWithBR(adjustYearsInViazaLink(reply));
+    history.push({ role: 'assistant', content: reply });
+    return { reply };
+  } catch (err) {
+    return { status: 500, error: 'Instabilidade no agente. Tente novamente.' };
+  }
+}
+
+app.post('/api/chat', async (req, res) => {
+  const { sessionId, message } = req.body || {};
+  if (!sessionId || !message) {
+    return res.status(400).json({ error: 'Parâmetros obrigatórios: sessionId e message' });
+  }
+
+  try {
+    if (!sessions.has(sessionId)) { sessions.set(sessionId, []); }
+    const history = sessions.get(sessionId);
+    history.push({ role: 'user', content: String(message) });
+
+    if (!OPENAI_API_KEY) {
+      return res.status(500).json({ reply: 'Backend sem OPENAI_API_KEY configurada.' });
+    }
+
+    function getSessionState(sid){ return sessionState.get(sid) || {}; }
+    function isStateComplete(state){
+      return state &&
+        state.dep &&
+        state.des &&
+        state.dpt &&
+        ((state.adt||0)+(state.chd||0)+(state.bby||0) > 0) &&
+        (state.ow === true || (state.ow === false && state.dst));
+    }
+    function mergeStateData(sid, newData){
+      const current = getSessionState(sid);
+      const merged = {
+        dep: newData.dep || current.dep || undefined,
+        des: newData.des || current.des || undefined,
+        dpt: newData.dpt || current.dpt || undefined,
+        dst: newData.dst || current.dst || null,
+        adt: newData.adt !== undefined ? newData.adt : (current.adt || 0),
+        chd: newData.chd !== undefined ? newData.chd : (current.chd || 0),
+        bby: newData.bby !== undefined ? newData.bby : (current.bby || 0),
+        ow: newData.ow !== undefined ? newData.ow : (current.ow !== undefined ? current.ow : true),
+        ec: newData.ec !== undefined ? newData.ec : (current.ec || true),
+      };
+      sessionState.set(sid, merged);
+      console.log('💾 Estado mesclado:', merged);
+      return merged;
+    }
+
+
+    let state = getSessionState(sessionId);
+    console.log('📋 Estado atual:', state);
+
+    if (isStateComplete(state) && isConfirmation(message)) {
+      console.log('✅ Estado completo e confirmado! Gerando link...');
+      try {
+        const stateToValidate = {
+          dep: state.dep,
+          des: state.des,
+          dpt: state.dpt,
+          dst: state.dst || null,
+          adt: state.adt || 0,
+          chd: state.chd || 0,
+          bby: state.bby || 0,
+          ec: state.ec !== undefined ? state.ec : true,
+          ow: state.ow !== undefined ? state.ow : true,
+        };
+        console.log('🔗 Enviando para link:', stateToValidate);
+        const url = await buildQuoteLinkStandalone(stateToValidate);
+        sessionState.delete(sessionId);
+        console.log('🧹 Memória da sessão limpa!');
+        const reply = `🎉 Pronto! Aqui está sua cotação:\n${url}\n\nDeseja outra cotação?`;
+        history.push({ role: 'assistant', content: reply });
+        return res.json({ reply });
+      } catch (err) {
+        console.error('❌ Erro ao gerar link:', err.message);
+        sessionState.delete(sessionId);
+        console.log('🧹 Memória limpa após erro!');
+        const reply = 'Houve erro ao gerar o link. Vamos começar uma nova cotação? Informe origem, destino, data e passageiros.';
+        history.push({ role: 'assistant', content: reply });
+        return res.json({ reply });
+      }
+    }
+
+    console.log('🔍 Extraindo dados da mensagem...');
+    const extracted = extractAllData(message);
+    if (Object.keys(extracted).length > 0) {
+      console.log('✅ Dados extraídos:', extracted);
+      if (Object.keys(state).length > 0 && extracted.dep && extracted.des && (state.dep !== extracted.dep || state.des !== extracted.des)) {
+        console.log('🔄 Novo pedido detectado! Limpando memória anterior...');
+        sessionState.delete(sessionId);
+        state = {};
+        console.log('🧹 Memória limpa para novo pedido!');
+      }
+      const merged = mergeStateData(sessionId, extracted);
+      if (isStateComplete(merged)) {
+        const summary = formatStateMessage(merged);
+        const reply = `${summary}\n\n✅ Dados completos! Confirma?`;
+        history.push({ role: 'assistant', content: reply });
+        return res.json({ reply });
+      } else {
+        const reply = await askAgentForNext(merged, message);
+        history.push({ role: 'assistant', content: reply });
+        return res.json({ reply });
+      }
+    }
+
+    console.log('📊 Preenchendo dados parciais...');
+    let hasNewData = false;
+    const dates = extractDatesFromText(message);
+    if (dates && dates.dpt) { mergeStateData(sessionId, { dpt: dates.dpt, dst: dates.dst, ow: dates.ow }); hasNewData = true; console.log('✅ Data armazenada'); }
+    const pax = extractPassengersFromText(message);
+    if (pax && ((pax.adt||0)+(pax.chd||0)+(pax.bby||0)>0)) { mergeStateData(sessionId, { adt: pax.adt, chd: pax.chd, bby: pax.bby }); hasNewData = true; console.log('✅ Passageiros armazenados'); }
+    state = getSessionState(sessionId);
+    if (isStateComplete(state)) {
+      const summary = formatStateMessage(state);
+      const reply = `${summary}\n\n✅ Dados completos! Confirma?`;
+      history.push({ role: 'assistant', content: reply });
+      return res.json({ reply });
+    }
+
+    if (hasNewData) {
+      const reply = await askAgentForNext(state, message);
+      history.push({ role: 'assistant', content: reply });
+      return res.json({ reply });
+    }
+
+    console.log('🚀 Nenhum dado extraído. Chamando agent...');
+    try {
+      const result = await run(agent, message);
+      let reply = null;
+      if (result?.state?.modelResponses?.[0]?.output?.[0]?.content?.[0]?.text) { reply = result.state.modelResponses[0].output[0].content[0].text; }
+      else if (result?.finalOutput) { reply = result.finalOutput; }
+      else if (typeof result === 'string') { reply = result; }
+      else { reply = 'Não consegui processar sua mensagem.'; }
+      reply = replaceISODatesWithBR(adjustYearsInViazaLink(reply));
+      history.push({ role: 'assistant', content: reply });
+      return res.json({ reply });
+    } catch (err) {
+      console.error('❌ ERRO NO AGENT:', err.message);
+      return res.status(500).json({ reply: 'Desculpe, tive um problema. Pode repetir sua solicitação?' });
+    }
+
+  } catch (err) {
+    console.error('❌ Erro geral:', err);
+    return res.status(500).json({ reply: 'Erro interno. Tente novamente.' });
+  }
+});
+
+function evoDigits(n){ return String(n||'').replace(/\D+/g,''); }
+async function evoSendText(number,text){ if(!EVO_API_URL||!EVO_API_KEY||!EVO_INSTANCE) return false; const base=String(EVO_API_URL).replace(/\/+$/,''); const url=`${base}/message/sendText/${EVO_INSTANCE}`; const body={ number:evoDigits(number), textMessage:{ text:String(text||'') } }; const r=await fetch(url,{ method:'POST', headers:{ 'Content-Type':'application/json', apikey:EVO_API_KEY }, body: JSON.stringify(body) }); return r.ok; }
+function parseEvoPayload(body){ let text=null; let number=null; const m=body?.messages?.[0]; text=m?.message?.conversation||m?.message?.extendedTextMessage?.text||m?.message?.textMessage?.text||body?.textMessage?.text||body?.message?.textMessage?.text||body?.message?.conversation||body?.message?.extendedTextMessage?.text||body?.text; const jid=m?.key?.remoteJid||body?.key?.remoteJid||null; if(jid) number=evoDigits(String(jid).split('@')[0]); if(!number) number=body?.number||body?.sender?.phone||body?.phone||null; number=number?evoDigits(number):null; return { text, number }; }
+function extractAllData(text){
+  if (!text) return {};
+  console.log(`\n🔍 extractAllData: "${text}"`);
+  const result = {};
+  const base = String(text||'');
+  const cleanedText = base
+    .replace(/\b(oi|ola|olá|hey|eae|salve|bom dia|boa tarde|boa noite)\b/gi,'')
+    .replace(/\b(quero ir|quero viajar|vou|vou para|to indo|estou indo)\b/gi,'')
+    .trim();
+  const iataMatch = cleanedText.match(/([a-záàâãéèêíïóôõöúçñ\s]+?)\s+(?:para|pra)\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s+dia|\s+com|$|,)/i);
+  if (iataMatch) {
+    let depCity = iataMatch[1].trim();
+    let desCity = iataMatch[2].trim();
+    depCity = depCity.replace(/^de\s+/i, '').replace(/\s+(dia|ida|volta|com|sem).*$/i, '').trim();
+    desCity = desCity.replace(/^de\s+/i, '').replace(/\s+(dia|ida|volta|com|sem).*$/i, '').trim();
+    console.log(`  📍 Padrão encontrado: "${depCity}" → "${desCity}"`);
+    let dep = resolveIATA(depCity);
+    let des = resolveIATA(desCity);
+    if (!dep) { const normLeft = normalizeText(depCity); for (const entry of IATA_LEXICON) { const m = anyAliasMatch(entry, normLeft); if (m) { dep = entry.code; break; } } }
+    if (!des) { const normRight = normalizeText(desCity); for (const entry of IATA_LEXICON) { const m = anyAliasMatch(entry, normRight); if (m) { des = entry.code; break; } } }
+    console.log(`  🔍 Resolvido: ${dep} → ${des}`);
+    if (dep && des) {
+      result.dep = dep;
+      result.des = des;
+      console.log(`  ✅ IATA FINAL: ${dep} → ${des}`);
+    } else {
+      console.log('  ❌ Não conseguiu resolver');
+    }
+  } else {
+    console.log('  ❌ Padrão "X para Y" não encontrado');
+    const mDep = cleanedText.match(/\bde\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s+(?:para|pra)|\s+(?:dia|ida|volta)|,|$)/i);
+    const mDes = cleanedText.match(/\b(?:para|pra)\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s+(?:dia|ida|volta)|,|$)/i);
+    let dep = null; let des = null;
+    if (mDep) { let c=mDep[1].trim(); c=c.replace(/^de\s+/i,'').trim(); dep=resolveIATA(c)||null; if(!dep){ const n=normalizeText(c); for(const entry of IATA_LEXICON){ if(anyAliasMatch(entry,n)){ dep=entry.code; break; } } } }
+    if (mDes) { let c=mDes[1].trim(); c=c.replace(/^de\s+/i,'').trim(); des=resolveIATA(c)||null; if(!des){ const n=normalizeText(c); for(const entry of IATA_LEXICON){ if(anyAliasMatch(entry,n)){ des=entry.code; break; } } } }
+    if (dep && des) { result.dep=dep; result.des=des; console.log(`  ✅ IATA FINAL: ${dep} → ${des}`); }
+    else {
+      const normAll = normalizeText(cleanedText);
+      const found=[];
+      for (const entry of IATA_LEXICON) { if (anyAliasMatch(entry, normAll)) { found.push(entry.code); if (found.length>=2) break; } }
+      if (found.length>=2) { result.dep=found[0]; result.des=found[1]; console.log(`  ✅ IATA FINAL (aliases): ${result.dep} → ${result.des}`); }
+      else if (!dep && found.length===1) { result.dep=result.dep||found[0]; console.log(`  ✅ IATA parcial: dep=${result.dep}`); }
+    }
+  }
+  const dateMatch = text.match(/dia\s+(\d{1,2})\/(\d{1,2})/i);
+  if (dateMatch) {
+    const day = String(dateMatch[1]).padStart(2, '0');
+    const month = String(dateMatch[2]).padStart(2, '0');
+    let year = new Date().getFullYear();
+    const today = new Date();
+    const currentMonth = today.getMonth() + 1;
+    if (parseInt(month) < currentMonth) {
+      year++;
+    }
+    result.dpt = `${year}-${month}-${day}`;
+    console.log(`  ✅ Data ida: ${result.dpt}`);
+    const returnMatch = text.match(/volta\s+(\d{1,2})\/(\d{1,2})|retorno\s+(\d{1,2})\/(\d{1,2})/i);
+    if (returnMatch) {
+      const retDay = String(returnMatch[1] || returnMatch[3]).padStart(2, '0');
+      const retMonth = String(returnMatch[2] || returnMatch[4]).padStart(2, '0');
+      let retYear = year;
+      if (parseInt(retMonth) < parseInt(month)) {
+        retYear++;
+      }
+      result.dst = `${retYear}-${retMonth}-${retDay}`;
+      result.ow = false;
+      console.log(`  ✅ Data volta: ${result.dst}`);
+    } else {
+      result.ow = true;
+      console.log('  ✅ Só ida');
+    }
+  }
+  else {
+    const dmAll = Array.from(text.matchAll(/\b(\d{1,2})\/(\d{1,2})\b/g));
+    if (dmAll.length >= 1) {
+      const d1 = dmAll[0];
+      const day = String(d1[1]).padStart(2, '0');
+      const month = String(d1[2]).padStart(2, '0');
+      let year = new Date().getFullYear();
+      const today = new Date();
+      const currentMonth = today.getMonth() + 1;
+      if (parseInt(month, 10) < currentMonth) { year++; }
+      result.dpt = `${year}-${month}-${day}`;
+      console.log(`  ✅ Data ida: ${result.dpt}`);
+      if (dmAll.length >= 2) {
+        const d2 = dmAll[1];
+        const retDay = String(d2[1]).padStart(2, '0');
+        const retMonth = String(d2[2]).padStart(2, '0');
+        let retYear = year;
+        if (parseInt(retMonth, 10) < parseInt(month, 10)) { retYear++; }
+        result.dst = `${retYear}-${retMonth}-${retDay}`;
+        result.ow = false;
+        console.log(`  ✅ Data volta: ${result.dst}`);
+      } else {
+        result.ow = true;
+        console.log('  ✅ Só ida');
+      }
+    }
+  }
+  const adtMatch = text.match(/(\d+)\s*(?:adulto|adult)/i);
+  if (adtMatch) { result.adt = parseInt(adtMatch[1]); }
+  const chdMatch = text.match(/(\d+)\s*(?:criança|criancas|crianças|child)/i);
+  if (chdMatch) { result.chd = parseInt(chdMatch[1]); }
+  const bbyMatch = text.match(/(\d+)\s*(?:bebê|baby|bebe)/i);
+  if (bbyMatch) { result.bby = parseInt(bbyMatch[1]); }
+  console.log('  📦 FINAL:', result);
+  return result;
+}
+
+app.post('/webhook/evo', async (req,res)=>{
+  try {
+    const { text, number } = parseEvoPayload(req.body || {});
+    if (!text || !number) return res.json({ ok: true });
+    const sid = number;
+    console.log(`\n📱 [${sid}] "${text}"`);
+    if (!sessions.has(sid)) sessions.set(sid, []);
+    const history = sessions.get(sid);
+    history.push({ role: 'user', content: String(text) });
+    if (!OPENAI_API_KEY) { await evoSendText(number, 'Erro: API key não configurada'); return res.json({ ok: true }); }
+    if (isGreeting(text)) { const reply='Olá! Para começar, de onde para onde deseja viajar?'; history.push({ role: 'assistant', content: reply }); await evoSendText(number, reply); return res.json({ ok: true }); }
+    await acquireLock(sid);
+    try {
+      let state = getSessionState(sid);
+      console.log('📋 Estado anterior:', state);
+      if (isStateComplete(state) && isConfirmation(text)) {
+        console.log('✅ Confirmado! Gerando link...');
+        try {
+          const stateToValidate = {
+            dep: state.dep,
+            des: state.des,
+            dpt: state.dpt,
+            dst: state.dst || null,
+            adt: state.adt || 0,
+            chd: state.chd || 0,
+            bby: state.bby || 0,
+            ec: state.ec !== undefined ? state.ec : true,
+            ow: state.ow !== undefined ? state.ow : true,
+          };
+          console.log('🔗 Enviando para link:', stateToValidate);
+          const url = await buildQuoteLinkStandalone(stateToValidate);
+          sessionState.delete(sid);
+          const reply = `🎉 Aqui está sua cotação:\n${url}\n\nDeseja outra?`;
+          history.push({ role: 'assistant', content: reply });
+          await evoSendText(number, reply);
+          return res.json({ ok: true });
+        } catch (err) {
+          console.error('❌ Erro ao gerar link:', err.message);
+          sessionState.delete(sid);
+          const reply = `❌ Erro: ${err.message}\n\nVamos começar de novo? Informe: origem, destino, datas e passageiros.`;
+          history.push({ role: 'assistant', content: reply });
+          await evoSendText(number, reply);
+          return res.json({ ok: true });
+        }
+      }
+      console.log('🔍 Extraindo dados...');
+      const extracted = extractAllData(text);
+      console.log('📦 Extraído:', extracted);
+      if (extracted.dep && extracted.des) {
+        if (state.dep && state.des && (state.dep !== extracted.dep || state.des !== extracted.des)) {
+          console.log('🔄 Novo pedido! Limpando...');
+          sessionState.delete(sid);
+          state = {};
+        }
+      }
+      if (Object.keys(extracted).length > 0) {
+        console.log('💾 Mesclando dados...');
+        state = mergeStateData(sid, extracted);
+        console.log('📋 Estado mesclado:', state);
+      }
+      if (isStateComplete(state)) {
+        const summary = formatStateMessage(state);
+        const reply = `${summary}\n\n✅ Perfeito! Confirma essa cotação?`;
+        history.push({ role: 'assistant', content: reply });
+        await evoSendText(number, reply);
+        return res.json({ ok: true });
+      }
+      const reply = await askAgentForNext(state, text);
+      history.push({ role: 'assistant', content: reply });
+      await evoSendText(number, reply);
+      return res.json({ ok: true });
+    } finally {
+      releaseLock(sid);
+    }
+  } catch (err) {
+    console.error('❌ Erro webhook:', err);
+    return res.json({ ok: true });
+  }
+});
+app.post('/evo/send-text', async (req,res)=>{ try{ const number=req.body?.number||req.query?.number; const text=req.body?.text||req.query?.text||'Teste Viaza: integração Evolution ativa.'; if(!number) return res.status(400).send('number'); const ok=await evoSendText(number,text); return res.json({ ok, number: evoDigits(number), text }); } catch(err){ return res.status(500).send(String(err?.message||err)); } });
+
+app.listen(Number(PORT), ()=>{ console.log(`Servidor iniciado em http://localhost:${PORT}`); });
+// Extração de dados a partir da mensagem para resumo/confirmacao
+function extractIATAFromText(text){
+  let raw = String(text || '').trim();
+  raw = raw
+    .replace(/\b(oi|ola|olá|hey|vc|você|quero|gostaria|gostava|preciso|desejo|vou|vamos)\b/gi, '')
+    .replace(/\b(ir|ir para|viajar para|passagem para|passagens para|quero ir|quero viajar)\b/gi, 'PARA')
+    .replace(/\bPARA\s+PARA/gi, 'PARA')
+    .trim();
+  const norm = normalizeText(raw);
+  console.log(`  🔍 extractIATAFromText cleaned: "${raw}"`);
+
+  function isForbiddenToken(tok){
+    const t = normalizeText(tok);
+    return IATA_STOPLIST.has(t);
+  }
+
+  const patterns = [
+    /de\s+([a-záàâãéèêíïóôõöúçñ\s]+?)\s+(?:para|pra)\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s+(?:dia|data|ida|volta|com|sem)|$)/i,
+    /(?:saindo\s+)?de\s+([a-záàâãéèêíïóôõöúçñ\s]+?)\s+(?:para|pra)\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s|,|$)/i,
+    /([a-záàâãéèêíïóôõöúçñ\s]+?)\s+(?:para|pra)\s+([a-záàâãéèêíïóôõöúçñ\s]+?)(?:\s+(?:dia|data|ida|volta)|$)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    if (match) {
+      let left = match[1].trim();
+      let right = match[2].trim();
+      left = left.replace(/^(quero|quer|passagem|passagens|ida|volta|uma|um|vou|queria|gostaria|preciso|busco|desejo)\s+/i, '').replace(/\s+(passagem|passagens)$/i, '').trim();
+      right = right.replace(/\s+(dia|data|com|sem|partindo|retorno|ida|volta|em|no|na).*$/i, '').trim();
+      console.log('  📍 Padrão encontrado:', { left, right });
+      if (left && right && !isForbiddenToken(left) && !isForbiddenToken(right)) {
+        const dep = resolveIATA(left);
+        const des = resolveIATA(right);
+        console.log('  ✅ Resolveu:', { dep, des });
+        if (dep && des) {
+          console.log('  🎯 RETORNANDO:', { dep, des });
+          return { dep, des };
+        }
+      }
+    }
+  }
+
+  const codes = Array.from(raw.matchAll(/\b([A-Z]{3})\b/g))
+    .map(x => x[1].toUpperCase())
+    .filter(c => !IATA_STOPLIST.has(normalizeText(c)));
+  console.log('  📍 Códigos IATA:', codes);
+  if (codes.length >= 2) {
+    console.log('  🎯 RETORNANDO códigos:', [codes[0], codes[1]]);
+    return { dep: codes[0], des: codes[1] };
+  }
+  if (codes.length === 1) {
+    console.log('  📍 Um código, procurando alias...');
+    const textWithoutCode = raw.replace(new RegExp(`\b${codes[0]}\b`, 'i'), '');
+    for (const entry of IATA_LEXICON) {
+      const match = anyAliasMatch(entry, normalizeText(textWithoutCode));
+      if (match && entry.code !== codes[0]) {
+        console.log('  🎯 RETORNANDO misto:', [codes[0], entry.code]);
+        return { dep: codes[0], des: entry.code };
+      }
+    }
+  }
+
+  const found = [];
+  for (const entry of IATA_LEXICON) {
+    const match = anyAliasMatch(entry, norm);
+    if (match) {
+      found.push({ code: entry.code, matchType: match.matchType });
+      if (found.length >= 2) break;
+    }
+  }
+  console.log('  📍 Aliases:', found);
+  if (found.length >= 2) {
+    const exacts = found.filter(f => f.matchType === 'exact').map(f => f.code);
+    if (exacts.length >= 2) {
+      console.log('  🎯 RETORNANDO exatos:', exacts);
+      return { dep: exacts[0], des: exacts[1] };
+    }
+    console.log('  🎯 RETORNANDO aliases:', [found[0].code, found[1].code]);
+    return { dep: found[0].code, des: found[1].code };
+  }
+
+  console.log('  ❌ Não encontrou IATA');
+  return null;
+}
+
+function extractAnyData(text){
+  if (!text) return {};
+  console.log(`\n🔍 [extractAnyData] Entrada: "${text}"`);
+  const result = {};
+  const places = extractIATAFromText(text);
+  if (places?.dep && places?.des) { result.dep = places.dep; result.des = places.des; console.log(`  ✅ IATA: ${result.dep} → ${result.des}`); }
+  const dates = extractDatesFromText(text);
+  if (dates?.dpt) { result.dpt = dates.dpt; result.dst = dates.dst || null; result.ow = dates.ow ?? true; console.log(`  ✅ Datas: ${result.dpt} até ${result.dst || 'só ida'}`); }
+  const pax = extractPassengersFromText(text);
+  if (pax) { result.adt = pax.adt || 0; result.chd = pax.chd || 0; result.bby = pax.bby || 0; console.log(`  ✅ Passageiros: ${result.adt}A ${result.chd}C ${result.bby}B`); }
+  return result;
+}
+function extractDatesFromText(text){ const raw=stripDiacritics(String(text||'').toLowerCase()); const candidates=[]; const isoMatches=raw.match(/\b\d{4}-\d{2}-\d{2}\b/g)||[]; candidates.push(...isoMatches); const dmMatches=raw.match(/\b\d{1,2}\/\d{1,2}(?:\/\d{4})?\b/g)||[]; candidates.push(...dmMatches); const monthKeys=Object.keys(MONTHS_PT).join('|'); const natMatches=Array.from(raw.matchAll(new RegExp(`(\\d{1,2})\\s*(?:de\\s*)?(${monthKeys})`,'g'))).map(m=>`${m[1]} ${m[2]}`); candidates.push(...natMatches); const parsed=[]; for(const c of candidates){ const iso=parseNaturalDate(c); if(iso) parsed.push(iso); if(parsed.length>=2) break; } const dpt=parsed[0]||null; const dst=parsed[1]||null; if(!dpt) return null; if(!withinWindow(dpt)) return null; if(dst){ if(!withinWindow(dst)) return null; if(new Date(dst)<new Date(dpt)) return null; } return { dpt, dst, ow: !dst }; }
+function extractPassengersFromText(text){
+  if (!text) return null;
+  const s = normalizeText(String(text)).toLowerCase();
+  if (/\b(so eu|sou so|apenas eu|só eu|somente eu|só|me)\b/.test(s)) { console.log('  ✅ "Só eu" → 1 adulto'); return { adt: 1, chd: 0, bby: 0 }; }
+  if (/\b(nos|nós|a gente|minha familia|familia inteira|todos)\b/.test(s)) { console.log('  ⚠️ Referência vaga detectada'); return null; }
+  console.log(`  🔍 extractPassengersFromText: "${s.substring(0,50)}..."`);
+  if (!/\b(adulto|crianca|bebe|pessoa|pax|passageiro)\b/.test(s)) { console.log('  ❌ Sem info de passageiros'); return null; }
+  const num=(v)=>parseNumberPt(v)??(isNaN(Number(v))?undefined:Number(v));
+  const mAdt=s.match(/(\d+|uma|um|duas|dois|tres|quatro|cinco|seis|sete|oito|nove)\s*(?:adulto)/i);
+  const mChd=s.match(/(\d+|uma|um|duas|dois|tres|quatro|cinco|seis|sete|oito|nove)\s*(?:crianca)/i);
+  const mBby=s.match(/(\d+|uma|um|duas|dois|tres|quatro|cinco|seis|sete|oito|nove)\s*(?:bebe|baby)/i);
+  const adt=num(mAdt?.[1])??1;
+  const chd=num(mChd?.[1])??0;
+  const bby=num(mBby?.[1])??0;
+  const total=adt+chd+bby;
+  if(total<1||total>9){ console.log(`  ❌ Total inválido: ${total}`); return null; }
+  console.log(`  ✅ ${adt}A ${chd}C ${bby}B`);
+  return { adt, chd, bby };
+}
+function summaryForState(state){ const parts=[]; if(state.dep) parts.push(`origem ${state.dep}`); if(state.des) parts.push(`destino ${state.des}`); if(state.dpt) parts.push(`ida ${formatISOToBR(state.dpt)}`); if(state.dst) parts.push(`volta ${formatISOToBR(state.dst)}`); const pax=[]; if((state.adt||0)>0) pax.push(`${state.adt} adulto(s)`); if((state.chd||0)>0) pax.push(`${state.chd} criança(s)`); if((state.bby||0)>0) pax.push(`${state.bby} bebê(s)`); const paxStr=pax.join(', '); if(parts.length===0 && !paxStr) return 'Vamos começar: me diga origem e destino.'; return `Resumo: ${parts.join(', ')}.${paxStr?` Passageiros: ${paxStr}.`:''}`; }
