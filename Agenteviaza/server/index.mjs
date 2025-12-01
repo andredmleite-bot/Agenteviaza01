@@ -1,4 +1,4 @@
-﻿import "dotenv/config"
+import "dotenv/config"
 import express from "express"
 
 const app = express()
@@ -185,5 +185,3 @@ app.post('/api/chat', async (req,res)=>{
 app.get('/health', (req,res)=>{ res.json({ status:'ok', timestamp:new Date().toISOString(), 'sessões_ativas': sessions.size }) })
 
 app.listen(PORT, ()=>{ console.log(`\n Servidor iniciado em http://localhost:${PORT}`); console.log(' Rotas disponíveis:'); console.log('    POST /webhook/evo'); console.log('    POST /api/chat'); console.log('    GET  /health\n') })
-
-export default app
